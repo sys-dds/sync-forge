@@ -1,0 +1,29 @@
+spring:
+  application:
+    name: sync-forge-api
+  datasource:
+    url: ${SYNCFORGE_DB_URL:jdbc:postgresql://localhost:5432/syncforge}
+    username: ${SYNCFORGE_DB_USER:syncforge}
+    password: ${SYNCFORGE_DB_PASSWORD:syncforge}
+  data:
+    redis:
+      host: ${SYNCFORGE_REDIS_HOST:localhost}
+      port: ${SYNCFORGE_REDIS_PORT:6379}
+  flyway:
+    enabled: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+  health:
+    readinessstate:
+      enabled: true
+    livenessstate:
+      enabled: true
