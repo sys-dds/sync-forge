@@ -38,11 +38,16 @@ class SlowConsumerQuarantineIntegrationTest extends AbstractIntegrationTest {
         Fixture fixture = fixture();
         TestSocket editor = TestSocket.connect(websocketUri(), fixture.editorId(), "slow-device", "slow-session", objectMapper);
         TestSocket owner = TestSocket.connect(websocketUri(), fixture.ownerId(), "owner-device", "owner-session", objectMapper);
+        TestSocket disconnecting = TestSocket.connect(websocketUri(), fixture.viewerId(), "disconnect-device", "disconnect-session", objectMapper);
         Map<String, Object> joinedEditor = join(editor, fixture.roomId().toString());
+        Map<String, Object> joinedDisconnecting = join(disconnecting, fixture.roomId().toString());
         join(owner, fixture.roomId().toString());
         String editorConnectionId = joinedEditor.get("connectionId").toString();
+        String resumeToken = payload(joinedEditor).get("resumeToken").toString();
+        String disconnectingConnectionId = joinedDisconnecting.get("connectionId").toString();
         editor.drain();
         owner.drain();
+        disconnecting.drain();
 
         slowConsumerService.warn(fixture.roomId(), fixture.editorId(), editorConnectionId, nodeIdentity.nodeId(), 80, 80);
         assertThat(getList("/api/v1/rooms/" + fixture.roomId() + "/slow-consumers"))
@@ -56,6 +61,23 @@ class SlowConsumerQuarantineIntegrationTest extends AbstractIntegrationTest {
                 .anySatisfy(row -> assertThat(row)
                         .containsEntry("connectionId", editorConnectionId)
                         .containsEntry("reason", "SLOW_CONSUMER"));
+
+        editor.send(Map.of(
+                "type", "RESUME_ROOM",
+                "messageId", "quarantined-resume",
+                "roomId", fixture.roomId().toString(),
+                "payload", Map.of("resumeToken", resumeToken, "lastSeenRoomSeq", 0)));
+        assertThat(payload(editor.nextOfType("SESSION_QUARANTINED")))
+                .containsEntry("connectionId", editorConnectionId)
+                .containsEntry("reason", "SLOW_CONSUMER");
+
+        slowConsumerService.quarantined(fixture.roomId(), fixture.viewerId(), disconnectingConnectionId, nodeIdentity.nodeId(), 100, 100);
+        quarantineService.quarantine(fixture.roomId(), fixture.viewerId(), disconnectingConnectionId, "disconnect-session", "SLOW_CONSUMER");
+        disconnecting.close();
+        assertThat(getList("/api/v1/rooms/" + fixture.roomId() + "/quarantines").stream()
+                .filter(row -> disconnectingConnectionId.equals(row.get("connectionId")))
+                .findFirst())
+                .hasValueSatisfying(row -> assertThat(row.get("releasedAt")).isNotNull());
 
         editor.send(operationMessage("quarantined-submit", 1, 0, Map.of("position", 0, "text", "blocked"), fixture.roomId().toString()));
         assertThat(payload(editor.nextOfType("SESSION_QUARANTINED")))

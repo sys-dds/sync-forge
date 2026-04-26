@@ -109,6 +109,15 @@ class RedisRoomEventStreamIntegrationTest extends AbstractIntegrationTest {
 
         assertThat(streamConsumer.pollRoom(fixture.roomId())).isZero();
         assertThat(listener.hasMessageOfTypeWithin("OPERATION_APPLIED", 300)).isFalse();
+
+        jdbcTemplate.update("""
+                update room_stream_offsets
+                set last_room_seq = 0, last_stream_id = null
+                where room_id = ? and node_id = ?
+                """, fixture.roomId(), nodeIdentity.nodeId());
+        assertThat(streamConsumer.pollRoom(fixture.roomId())).isEqualTo(1);
+        assertThat(listener.hasMessageOfTypeWithin("OPERATION_APPLIED", 300)).isFalse();
+
         editor.close();
         listener.close();
         otherRoom.close();

@@ -3,6 +3,9 @@ spring:
     url: jdbc:postgresql://127.0.0.1:1/syncforge_test
     username: syncforge_test
     password: syncforge_test
+    hikari:
+      maximum-pool-size: 3
+      minimum-idle: 0
   data:
     redis:
       host: 127.0.0.1
