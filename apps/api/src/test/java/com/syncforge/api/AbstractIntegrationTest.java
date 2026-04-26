@@ -64,6 +64,7 @@ public abstract class AbstractIntegrationTest {
                     node_room_subscriptions,
                     syncforge_node_heartbeats,
                     room_stream_offsets,
+                    websocket_protocol_sessions,
                     websocket_session_quarantines,
                     websocket_slow_consumer_events,
                     room_backpressure_states,

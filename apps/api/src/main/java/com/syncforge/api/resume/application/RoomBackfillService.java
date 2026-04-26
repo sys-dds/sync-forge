@@ -11,6 +11,7 @@ import com.syncforge.api.operation.model.OperationRecord;
 import com.syncforge.api.operation.store.OperationRepository;
 import com.syncforge.api.resume.model.BackfillResult;
 import com.syncforge.api.resume.store.RoomBackfillRepository;
+import com.syncforge.api.room.application.RoomPermissionService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -19,20 +20,24 @@ public class RoomBackfillService {
     private final OperationRepository operationRepository;
     private final RoomBackfillRepository roomBackfillRepository;
     private final DocumentStateService documentStateService;
+    private final RoomPermissionService permissionService;
     private final long maxBackfillEvents;
 
     public RoomBackfillService(
             OperationRepository operationRepository,
             RoomBackfillRepository roomBackfillRepository,
             DocumentStateService documentStateService,
+            RoomPermissionService permissionService,
             @Value("${syncforge.resume.max-backfill-events:100}") long maxBackfillEvents) {
         this.operationRepository = operationRepository;
         this.roomBackfillRepository = roomBackfillRepository;
         this.documentStateService = documentStateService;
+        this.permissionService = permissionService;
         this.maxBackfillEvents = maxBackfillEvents;
     }
 
     public BackfillResult backfill(UUID roomId, UUID userId, String clientSessionId, long lastSeenRoomSeq) {
+        permissionService.requireView(roomId, userId);
         List<OperationRecord> operations = operationRepository.findByRoomAfterRoomSeq(roomId, lastSeenRoomSeq);
         long currentRoomSeq = operations.stream().mapToLong(OperationRecord::roomSeq).max().orElse(lastSeenRoomSeq);
         if (operations.size() > maxBackfillEvents) {
