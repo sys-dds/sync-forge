@@ -1,30 +1,33 @@
 package com.syncforge.api.websocket;
 
-import java.io.IOException;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.syncforge.api.backpressure.application.BoundedWebSocketSender;
+import com.syncforge.api.stream.application.NodeRoomSubscriptionService;
 import org.springframework.stereotype.Component;
-import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 
 @Component
 public class RoomWebSocketBroadcaster {
-    private final ObjectMapper objectMapper;
+    private final BoundedWebSocketSender boundedSender;
+    private final NodeRoomSubscriptionService subscriptionService;
     private final Map<UUID, Set<String>> roomSessions = new ConcurrentHashMap<>();
     private final Map<String, JoinedRoomConnection> sessionConnections = new ConcurrentHashMap<>();
 
-    public RoomWebSocketBroadcaster(ObjectMapper objectMapper) {
-        this.objectMapper = objectMapper;
+    public RoomWebSocketBroadcaster(BoundedWebSocketSender boundedSender, NodeRoomSubscriptionService subscriptionService) {
+        this.boundedSender = boundedSender;
+        this.subscriptionService = subscriptionService;
     }
 
     public void register(JoinedRoomConnection connection) {
         sessionConnections.put(connection.websocketSessionId(), connection);
         roomSessions.computeIfAbsent(connection.roomId(), ignored -> ConcurrentHashMap.newKeySet())
                 .add(connection.websocketSessionId());
+        boundedSender.register(connection);
+        subscriptionService.joined(connection.roomId());
     }
 
     public JoinedRoomConnection unregister(String websocketSessionId) {
@@ -37,6 +40,8 @@ public class RoomWebSocketBroadcaster {
                     roomSessions.remove(removed.roomId());
                 }
             }
+            boundedSender.unregister(removed);
+            subscriptionService.left(removed.roomId());
         }
         return removed;
     }
@@ -57,15 +62,11 @@ public class RoomWebSocketBroadcaster {
                 unregister(sessionId);
                 continue;
             }
-            try {
-                synchronized (session) {
-                    session.sendMessage(new TextMessage(objectMapper.writeValueAsString(envelope)));
-                }
-            } catch (IOException exception) {
+            if (!boundedSender.send(connection, envelope)) {
                 unregister(sessionId);
                 try {
                     session.close();
-                } catch (IOException ignored) {
+                } catch (Exception ignored) {
                     // Closing is best-effort after a failed send.
                 }
             }

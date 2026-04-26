@@ -60,6 +60,22 @@ public abstract class AbstractIntegrationTest {
         baseUrl = "http://localhost:" + port;
         jdbcTemplate.execute("""
                 truncate table
+                    cross_node_presence_states,
+                    node_room_subscriptions,
+                    syncforge_node_heartbeats,
+                    room_stream_offsets,
+                    websocket_session_quarantines,
+                    websocket_slow_consumer_events,
+                    room_backpressure_states,
+                    room_rate_limit_events,
+                    websocket_connection_flow_controls,
+                    room_backfill_requests,
+                    room_client_offsets,
+                    room_resume_tokens,
+                    document_snapshots,
+                    room_conflict_resolution_traces,
+                    document_state_rebuild_runs,
+                    document_live_states,
                     room_operations,
                     room_operation_attempts,
                     room_sequence_counters,

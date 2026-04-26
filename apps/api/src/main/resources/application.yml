@@ -27,3 +27,25 @@ management:
       enabled: true
     livenessstate:
       enabled: true
+
+syncforge:
+  node:
+    node-id: ${SYNCFORGE_NODE_ID:local-node-1}
+    heartbeat-ttl-seconds: ${SYNCFORGE_NODE_HEARTBEAT_TTL_SECONDS:30}
+  websocket:
+    max-outbound-queue-size: ${SYNCFORGE_WEBSOCKET_MAX_OUTBOUND_QUEUE_SIZE:100}
+    slow-consumer-queued-messages: ${SYNCFORGE_WEBSOCKET_SLOW_CONSUMER_QUEUED_MESSAGES:80}
+    send-timeout-ms: ${SYNCFORGE_WEBSOCKET_SEND_TIMEOUT_MS:500}
+    quarantine-ttl-seconds: ${SYNCFORGE_WEBSOCKET_QUARANTINE_TTL_SECONDS:60}
+  rate-limit:
+    operations-per-connection-per-second: ${SYNCFORGE_RATE_LIMIT_OPERATIONS_PER_CONNECTION_PER_SECOND:20}
+    operations-per-user-per-room-per-minute: ${SYNCFORGE_RATE_LIMIT_OPERATIONS_PER_USER_PER_ROOM_PER_MINUTE:300}
+  backpressure:
+    max-room-pending-events: ${SYNCFORGE_BACKPRESSURE_MAX_ROOM_PENDING_EVENTS:1000}
+    warning-pending-events: ${SYNCFORGE_BACKPRESSURE_WARNING_PENDING_EVENTS:800}
+  redis:
+    stream:
+      room-key-prefix: "${SYNCFORGE_REDIS_STREAM_ROOM_KEY_PREFIX:syncforge:room-events:}"
+      maxlen: ${SYNCFORGE_REDIS_STREAM_MAXLEN:10000}
+      consumer-poll-ms: ${SYNCFORGE_REDIS_STREAM_CONSUMER_POLL_MS:100}
+      enabled: ${SYNCFORGE_REDIS_STREAM_ENABLED:true}
