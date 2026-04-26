@@ -15,6 +15,7 @@ import com.syncforge.api.operation.model.OperationRecord;
 import com.syncforge.api.operation.store.OperationRepository;
 import com.syncforge.api.room.model.Room;
 import com.syncforge.api.room.store.RoomRepository;
+import com.syncforge.api.text.application.TextConvergenceService;
 import com.syncforge.api.shared.NotFoundException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -25,16 +26,19 @@ public class DocumentStateService {
     private final OperationRepository operationRepository;
     private final RoomRepository roomRepository;
     private final TextOperationApplier textOperationApplier;
+    private final TextConvergenceService textConvergenceService;
 
     public DocumentStateService(
             DocumentStateRepository documentStateRepository,
             OperationRepository operationRepository,
             RoomRepository roomRepository,
-            TextOperationApplier textOperationApplier) {
+            TextOperationApplier textOperationApplier,
+            TextConvergenceService textConvergenceService) {
         this.documentStateRepository = documentStateRepository;
         this.operationRepository = operationRepository;
         this.roomRepository = roomRepository;
         this.textOperationApplier = textOperationApplier;
+        this.textConvergenceService = textConvergenceService;
     }
 
     @Transactional
@@ -52,7 +56,9 @@ public class DocumentStateService {
         if (operation.baseRevision() != state.currentRevision()) {
             throw new IllegalStateException("Operation base revision does not match materialized state revision");
         }
-        AppliedTextOperation applied = textOperationApplier.apply(state.contentText(), operation.operationType(), operation.operation());
+        AppliedTextOperation applied = textConvergenceService.supports(operation.operationType())
+                ? textConvergenceService.applyAccepted(operation)
+                : textOperationApplier.apply(state.contentText(), operation.operationType(), operation.operation());
         return documentStateRepository.updateState(
                 operation.roomId(),
                 operation.roomSeq(),
@@ -68,6 +74,9 @@ public class DocumentStateService {
         DocumentLiveState state = getOrInitialize(roomId);
         if (state.currentRevision() != expectedRevision) {
             throw new IllegalStateException("Materialized state revision does not match room sequence revision");
+        }
+        if (textConvergenceService.supports(operationType)) {
+            return textConvergenceService.previewApply(roomId, operationType, operation);
         }
         return textOperationApplier.apply(state.contentText(), operationType, operation);
     }
@@ -108,6 +117,20 @@ public class DocumentStateService {
     }
 
     public ReplayResult replayOperations(List<OperationRecord> operations, String initialContent) {
+        if (operations.stream().anyMatch(operation -> textConvergenceService.supports(operation.operationType()))) {
+            if (initialContent != null && !initialContent.isEmpty() && !operations.isEmpty()) {
+                OperationRecord last = operations.get(operations.size() - 1);
+                String content = textConvergenceService.materializeVisibleText(last.roomId());
+                return new ReplayResult(content, last.roomSeq(), last.resultingRevision(), last.id(), operations.size());
+            }
+            var replay = textConvergenceService.replay(operations);
+            return new ReplayResult(
+                    replay.content(),
+                    replay.roomSeq(),
+                    replay.revision(),
+                    replay.lastOperationId(),
+                    replay.operationsReplayed());
+        }
         String content = initialContent == null ? "" : initialContent;
         long roomSeq = 0;
         long revision = 0;
