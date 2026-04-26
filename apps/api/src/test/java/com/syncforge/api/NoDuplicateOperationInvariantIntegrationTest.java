@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.Map;
 
+import com.syncforge.api.delivery.RoomEventOutboxDispatcher;
 import com.syncforge.api.documentstate.application.DocumentStateService;
 import com.syncforge.api.documentstate.model.DocumentLiveState;
 import com.syncforge.api.operation.application.OperationService;
@@ -39,6 +40,9 @@ class NoDuplicateOperationInvariantIntegrationTest extends AbstractIntegrationTe
     @Autowired
     RoomStreamKeyFactory keyFactory;
 
+    @Autowired
+    RoomEventOutboxDispatcher outboxDispatcher;
+
     @Test
     void duplicateOperationIdReusesOriginalAckWithoutSecondRowStreamOrMutation() {
         Fixture fixture = fixture();
@@ -68,6 +72,7 @@ class NoDuplicateOperationInvariantIntegrationTest extends AbstractIntegrationTe
                 from room_operations
                 where room_id = ? and operation_id = ?
                 """, Integer.class, fixture.roomId(), "duplicate-safe-1")).isOne();
+        assertThat(outboxDispatcher.dispatchOnce(10)).isEqualTo(1);
         assertThat(redisTemplate.opsForStream().range(keyFactory.roomStreamKey(fixture.roomId()), Range.unbounded()))
                 .hasSize(1);
         assertThat(documentStateService.getOrInitialize(fixture.roomId()).contentText())

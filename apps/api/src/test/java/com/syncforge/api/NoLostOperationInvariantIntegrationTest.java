@@ -1,34 +1,22 @@
 package com.syncforge.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.Map;
 import java.util.Optional;
-import java.util.UUID;
-import java.util.concurrent.atomic.AtomicReference;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.syncforge.api.delivery.RoomEventOutboxRepository;
+import com.syncforge.api.delivery.RoomEventOutboxStatus;
 import com.syncforge.api.documentstate.application.DocumentStateService;
 import com.syncforge.api.documentstate.model.DocumentLiveState;
-import com.syncforge.api.node.NodeIdentity;
 import com.syncforge.api.operation.application.OperationService;
 import com.syncforge.api.operation.model.OperationRecord;
 import com.syncforge.api.operation.model.OperationSubmitResult;
 import com.syncforge.api.operation.model.SubmitOperationCommand;
 import com.syncforge.api.operation.store.OperationRepository;
-import com.syncforge.api.stream.application.RoomEventStreamProperties;
-import com.syncforge.api.stream.application.RoomEventStreamPublisher;
 import com.syncforge.api.stream.application.RoomStreamKeyFactory;
-import com.syncforge.api.stream.application.StreamPublishException;
-import com.syncforge.api.stream.model.RoomStreamEvent;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Import;
-import org.springframework.context.annotation.Primary;
 import org.springframework.data.domain.Range;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.test.context.TestPropertySource;
@@ -39,10 +27,7 @@ import org.springframework.test.context.TestPropertySource;
         "syncforge.rate-limit.operations-per-connection-per-second=100",
         "syncforge.rate-limit.operations-per-user-per-room-per-minute=200"
 })
-@Import(NoLostOperationInvariantIntegrationTest.StreamPublisherTestConfig.class)
 class NoLostOperationInvariantIntegrationTest extends AbstractIntegrationTest {
-    private static final AtomicReference<String> FAILING_OPERATION_ID = new AtomicReference<>();
-
     @Autowired
     OperationService operationService;
 
@@ -58,13 +43,11 @@ class NoLostOperationInvariantIntegrationTest extends AbstractIntegrationTest {
     @Autowired
     RoomStreamKeyFactory keyFactory;
 
-    @BeforeEach
-    void clearPublisherFailure() {
-        FAILING_OPERATION_ID.set(null);
-    }
+    @Autowired
+    RoomEventOutboxRepository outboxRepository;
 
     @Test
-    void ackedOperationsAreDurableReplayableAndStreamed() {
+    void ackedOperationsAreDurableReplayableAndHaveDeliveryIntent() {
         Fixture fixture = fixture();
         redisTemplate.delete(keyFactory.roomStreamKey(fixture.roomId()));
 
@@ -95,31 +78,34 @@ class NoLostOperationInvariantIntegrationTest extends AbstractIntegrationTest {
         assertThat(replay.currentRoomSeq()).isEqualTo(live.currentRoomSeq());
 
         assertThat(redisTemplate.opsForStream().range(keyFactory.roomStreamKey(fixture.roomId()), Range.unbounded()))
-                .hasSize(4);
+                .isEmpty();
+        assertThat(outboxRepository.countByStatus(RoomEventOutboxStatus.PENDING)).isEqualTo(4);
+        assertThat(outboxRepository.findByRoomSeq(fixture.roomId(), insert.roomSeq())).isPresent();
+        assertThat(outboxRepository.findByRoomSeq(fixture.roomId(), delete.roomSeq())).isPresent();
+        assertThat(outboxRepository.findByRoomSeq(fixture.roomId(), noop.roomSeq())).isPresent();
+        assertThat(outboxRepository.findByRoomSeq(fixture.roomId(), transformed.roomSeq())).isPresent();
     }
 
     @Test
-    void streamPublishFailureRollsBackWithoutAckOrPersistence() {
+    void redisDeliveryDelayDoesNotLoseAckedCanonicalOperation() {
         Fixture fixture = fixture();
         OperationSubmitResult baseline = submit(fixture, "lost-baseline", 1, 0, "TEXT_INSERT",
                 Map.of("position", 0, "text", "ok"));
-        DocumentLiveState before = documentStateService.getOrInitialize(fixture.roomId());
-        FAILING_OPERATION_ID.set("lost-publish-fails");
+        OperationSubmitResult delayed = submit(fixture, "lost-publish-delayed", 2, baseline.revision(), "TEXT_INSERT",
+                Map.of("position", 2, "text", "!"));
 
-        assertThatThrownBy(() -> submit(fixture, "lost-publish-fails", 2, baseline.revision(), "TEXT_INSERT",
-                Map.of("position", 2, "text", "!")))
-                .isInstanceOf(StreamPublishException.class);
-
-        assertThat(operationRepository.findByRoomAndOperationId(fixture.roomId(), "lost-publish-fails")).isEmpty();
+        assertThat(delayed.accepted()).isTrue();
+        assertThat(operationRepository.findByRoomAndOperationId(fixture.roomId(), "lost-publish-delayed")).isPresent();
         DocumentLiveState after = documentStateService.getOrInitialize(fixture.roomId());
-        assertThat(after.contentText()).isEqualTo(before.contentText());
-        assertThat(after.currentRevision()).isEqualTo(before.currentRevision());
-        assertThat(after.currentRoomSeq()).isEqualTo(before.currentRoomSeq());
+        assertThat(after.contentText()).isEqualTo("ok!");
+        assertThat(after.currentRevision()).isEqualTo(delayed.revision());
+        assertThat(after.currentRoomSeq()).isEqualTo(delayed.roomSeq());
         assertThat(jdbcTemplate.queryForObject("""
                 select current_room_seq
                 from room_sequence_counters
                 where room_id = ?
-                """, Long.class, fixture.roomId())).isEqualTo(before.currentRoomSeq());
+                """, Long.class, fixture.roomId())).isEqualTo(delayed.roomSeq());
+        assertThat(outboxRepository.findByRoomSeq(fixture.roomId(), delayed.roomSeq())).isPresent();
     }
 
     private OperationSubmitResult submit(
@@ -149,27 +135,5 @@ class NoLostOperationInvariantIntegrationTest extends AbstractIntegrationTest {
         assertThat(record.get().resultingRevision()).isEqualTo(ack.revision());
         assertThat(record.get().operationId()).isEqualTo(ack.operationId());
         assertThat(record.get().operationType()).isEqualTo(operationType);
-    }
-
-    @TestConfiguration(proxyBeanMethods = false)
-    static class StreamPublisherTestConfig {
-        @Bean
-        @Primary
-        RoomEventStreamPublisher noLostOperationStreamPublisher(
-                StringRedisTemplate redisTemplate,
-                ObjectMapper objectMapper,
-                RoomEventStreamProperties properties,
-                RoomStreamKeyFactory keyFactory,
-                NodeIdentity nodeIdentity) {
-            return new RoomEventStreamPublisher(redisTemplate, objectMapper, properties, keyFactory, nodeIdentity) {
-                @Override
-                public Optional<RoomStreamEvent> publishAcceptedOperation(OperationRecord operation, boolean transformed) {
-                    if (operation.operationId().equals(FAILING_OPERATION_ID.get())) {
-                        throw new StreamPublishException("forced stream failure", new RuntimeException("forced"));
-                    }
-                    return super.publishAcceptedOperation(operation, transformed);
-                }
-            };
-        }
     }
 }

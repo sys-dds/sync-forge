@@ -7,6 +7,7 @@ import java.util.Set;
 import com.syncforge.api.conflict.application.ConflictDetectionService;
 import com.syncforge.api.conflict.model.ConflictResolutionResult;
 import com.syncforge.api.documentstate.application.DocumentStateService;
+import com.syncforge.api.delivery.RoomEventOutboxService;
 import com.syncforge.api.operation.model.OperationRecord;
 import com.syncforge.api.operation.model.OperationSubmitResult;
 import com.syncforge.api.operation.model.RoomSequence;
@@ -16,7 +17,6 @@ import com.syncforge.api.operation.store.OperationRepository;
 import com.syncforge.api.operation.store.RoomSequenceRepository;
 import com.syncforge.api.room.application.RoomPermissionService;
 import com.syncforge.api.shared.BadRequestException;
-import com.syncforge.api.stream.application.RoomEventStreamPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -30,7 +30,7 @@ public class OperationService {
     private final RoomPermissionService permissionService;
     private final DocumentStateService documentStateService;
     private final ConflictDetectionService conflictDetectionService;
-    private final RoomEventStreamPublisher streamPublisher;
+    private final RoomEventOutboxService outboxService;
 
     public OperationService(
             OperationRepository operationRepository,
@@ -39,14 +39,14 @@ public class OperationService {
             RoomPermissionService permissionService,
             DocumentStateService documentStateService,
             ConflictDetectionService conflictDetectionService,
-            RoomEventStreamPublisher streamPublisher) {
+            RoomEventOutboxService outboxService) {
         this.operationRepository = operationRepository;
         this.attemptRepository = attemptRepository;
         this.sequenceRepository = sequenceRepository;
         this.permissionService = permissionService;
         this.documentStateService = documentStateService;
         this.conflictDetectionService = conflictDetectionService;
-        this.streamPublisher = streamPublisher;
+        this.outboxService = outboxService;
     }
 
     @Transactional
@@ -123,10 +123,10 @@ public class OperationService {
                 nextRoomSeq, nextRevision, operationType, operation);
         sequenceRepository.advance(command.roomId(), nextRoomSeq, nextRevision);
         documentStateService.applyAcceptedOperation(inserted);
-        streamPublisher.publishAcceptedOperation(inserted, transformed);
         attemptRepository.record(command.roomId(), command.userId(), command.connectionId(), command.operationId(),
                 command.clientSeq(), command.baseRevision(), command.operationType(), command.operation(), "ACCEPTED",
                 null, null, inserted.roomSeq(), inserted.resultingRevision(), null);
+        outboxService.createPendingOperationEvent(inserted, transformed);
         return OperationSubmitResult.ack(inserted.operationId(), inserted.clientSeq(), inserted.roomSeq(), inserted.resultingRevision(),
                 false, inserted.operationType(), inserted.operation(), transformed);
     }

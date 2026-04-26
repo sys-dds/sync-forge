@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.syncforge.api.delivery.RoomEventOutboxDispatcher;
 import com.syncforge.api.node.NodeIdentity;
 import com.syncforge.api.operation.model.OperationRecord;
 import com.syncforge.api.stream.application.RoomEventStreamProperties;
@@ -43,6 +44,9 @@ class RedisRoomEventStreamIntegrationTest extends AbstractIntegrationTest {
     RoomEventStreamConsumer streamConsumer;
 
     @Autowired
+    RoomEventOutboxDispatcher outboxDispatcher;
+
+    @Autowired
     NodeIdentity nodeIdentity;
 
     @Test
@@ -56,6 +60,7 @@ class RedisRoomEventStreamIntegrationTest extends AbstractIntegrationTest {
         editor.drain();
         editor.send(operationMessage("stream-op-1", 1, 0, Map.of("position", 0, "text", "s"), fixture.roomId().toString()));
         assertThat(payload(editor.nextOfType("OPERATION_ACK"))).containsEntry("operationId", "stream-op-1");
+        assertThat(outboxDispatcher.dispatchOnce(10)).isEqualTo(1);
 
         List<MapRecord<String, Object, Object>> records = redisTemplate.opsForStream().range(streamKey, Range.unbounded());
         assertThat(records).hasSize(1);
@@ -94,6 +99,7 @@ class RedisRoomEventStreamIntegrationTest extends AbstractIntegrationTest {
 
         editor.send(operationMessage("stream-fanout-1", 1, 0, Map.of("position", 0, "text", "f"), fixture.roomId().toString()));
         assertThat(payload(editor.nextOfType("OPERATION_ACK"))).containsEntry("operationId", "stream-fanout-1");
+        assertThat(outboxDispatcher.dispatchOnce(10)).isEqualTo(1);
         assertThat(listener.hasMessageOfTypeWithin("OPERATION_APPLIED", 200)).isFalse();
 
         assertThat(streamConsumer.pollRoom(fixture.roomId())).isEqualTo(1);

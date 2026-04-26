@@ -9,5 +9,10 @@ public record RoomStreamOffset(
         String streamKey,
         String lastStreamId,
         long lastRoomSeq,
+        String status,
+        Long expectedRoomSeq,
+        Long observedRoomSeq,
+        OffsetDateTime lastGapAt,
+        String lastError,
         OffsetDateTime updatedAt) {
 }

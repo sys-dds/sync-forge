@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.util.Map;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.syncforge.api.delivery.RoomEventOutboxDispatcher;
 import com.syncforge.api.documentstate.application.DocumentStateService;
 import com.syncforge.api.operation.application.OperationService;
 import com.syncforge.api.operation.model.OperationSubmitResult;
@@ -41,6 +42,9 @@ class PermissionRegressionIntegrationTest extends AbstractIntegrationTest {
 
     @Autowired
     RoomStreamKeyFactory keyFactory;
+
+    @Autowired
+    RoomEventOutboxDispatcher outboxDispatcher;
 
     @Test
     void ownerEditorViewerAndNonMemberPermissionMatrixIsEnforced() throws Exception {
@@ -107,6 +111,7 @@ class PermissionRegressionIntegrationTest extends AbstractIntegrationTest {
         assertThat(nonMemberEdit.code()).isEqualTo("EDIT_PERMISSION_REQUIRED");
         assertThat(maxSeq(fixture.roomId())).isEqualTo(seqBeforePermissionFailure);
         assertThat(documentStateService.getOrInitialize(fixture.roomId()).contentText()).isEqualTo(contentBeforePermissionFailure);
+        assertThat(outboxDispatcher.dispatchOnce(10)).isEqualTo(2);
         assertThat(redisTemplate.opsForStream().range(keyFactory.roomStreamKey(fixture.roomId()), Range.unbounded()))
                 .hasSize(2);
 
