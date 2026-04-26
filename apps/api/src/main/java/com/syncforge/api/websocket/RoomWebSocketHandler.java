@@ -1,12 +1,20 @@
 package com.syncforge.api.websocket;
 
 import java.io.IOException;
+import java.util.Collection;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.syncforge.api.capability.CapabilityNegotiationItem;
+import com.syncforge.api.capability.CapabilityNegotiationResult;
+import com.syncforge.api.capability.CapabilityGateResult;
+import com.syncforge.api.capability.CapabilityGateService;
+import com.syncforge.api.capability.ClientCapability;
+import com.syncforge.api.capability.ClientCapabilityService;
 import com.syncforge.api.awareness.application.AwarenessService;
 import com.syncforge.api.awareness.model.AwarenessState;
 import com.syncforge.api.backpressure.application.BackpressureService;
@@ -20,6 +28,9 @@ import com.syncforge.api.operation.application.OperationService;
 import com.syncforge.api.operation.model.OperationSubmitResult;
 import com.syncforge.api.operation.model.SubmitOperationCommand;
 import com.syncforge.api.presence.application.PresenceService;
+import com.syncforge.api.protocol.ProtocolVersionNegotiationResult;
+import com.syncforge.api.protocol.ProtocolVersionNegotiationService;
+import com.syncforge.api.protocol.ProtocolSessionRepository;
 import com.syncforge.api.ratelimit.application.OperationRateLimitService;
 import com.syncforge.api.ratelimit.model.RateLimitDecision;
 import com.syncforge.api.resume.application.ClientOffsetService;
@@ -58,6 +69,10 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
     private final ClientOffsetService clientOffsetService;
     private final RoomBackfillService roomBackfillService;
     private final RoomEventStreamProperties streamProperties;
+    private final ProtocolVersionNegotiationService protocolVersionNegotiationService;
+    private final ClientCapabilityService clientCapabilityService;
+    private final CapabilityGateService capabilityGateService;
+    private final ProtocolSessionRepository protocolSessionRepository;
     private final RoomWebSocketBroadcaster broadcaster;
 
     public RoomWebSocketHandler(
@@ -77,6 +92,10 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
             ClientOffsetService clientOffsetService,
             RoomBackfillService roomBackfillService,
             RoomEventStreamProperties streamProperties,
+            ProtocolVersionNegotiationService protocolVersionNegotiationService,
+            ClientCapabilityService clientCapabilityService,
+            CapabilityGateService capabilityGateService,
+            ProtocolSessionRepository protocolSessionRepository,
             RoomWebSocketBroadcaster broadcaster) {
         this.objectMapper = objectMapper;
         this.userRepository = userRepository;
@@ -94,6 +113,10 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
         this.clientOffsetService = clientOffsetService;
         this.roomBackfillService = roomBackfillService;
         this.streamProperties = streamProperties;
+        this.protocolVersionNegotiationService = protocolVersionNegotiationService;
+        this.clientCapabilityService = clientCapabilityService;
+        this.capabilityGateService = capabilityGateService;
+        this.protocolSessionRepository = protocolSessionRepository;
         this.broadcaster = broadcaster;
     }
 
@@ -133,6 +156,7 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
         if (joined != null) {
             presenceService.leave(joined.roomId(), joined.userId(), joined.connectionId(), "SOCKET_CLOSED");
             connectionRegistryService.socketClosed(joined.roomId(), joined.userId(), joined.connectionId(), status.getCode());
+            protocolSessionRepository.markClosed(joined.connectionId());
             sessionQuarantineService.releaseDisconnected(joined.connectionId());
             broadcaster.broadcast(joined.roomId(), new RoomWebSocketEnvelope(
                     "PRESENCE_LEFT",
@@ -148,6 +172,16 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
             sendError(session, envelope.messageId(), envelope.roomId(), "ALREADY_JOINED_ROOM", "Connection has already joined a room");
             return;
         }
+        Map<String, Object> joinPayload = payloadMap(envelope);
+        Map<String, Object> negotiationFields = joinPayload == null ? Map.of() : joinPayload;
+        ProtocolVersionNegotiationResult protocol = protocolVersionNegotiationService.negotiate(negotiationFields);
+        if (!protocol.accepted()) {
+            sendProtocolRejected(session, envelope, protocol);
+            return;
+        }
+        CapabilityNegotiationResult capabilities = clientCapabilityService.negotiate(
+                protocol.negotiatedProtocolVersion(),
+                capabilityPayload(negotiationFields));
         UUID userId = parseHandshakeUser(session, envelope);
         if (userId == null) {
             return;
@@ -186,10 +220,22 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
         connectionRegistryService.join(roomId, userId, connectionId, session.getId(), joined.deviceId(), joined.clientSessionId());
         presenceService.join(roomId, userId, connectionId, session.getId(), joined.deviceId(), joined.clientSessionId());
         broadcaster.register(joined);
+        protocolSessionRepository.createNegotiated(
+                connectionId,
+                session.getId(),
+                roomId,
+                userId,
+                stringPayload(negotiationFields, "clientId"),
+                joined.deviceId(),
+                joined.clientSessionId(),
+                protocol,
+                capabilities);
         DocumentLiveState state = documentStateService.getOrInitialize(roomId);
         IssuedResumeToken resumeToken = resumeTokenService.issue(roomId, userId, connectionId, joined.clientSessionId(), state.currentRoomSeq());
         send(session, new RoomWebSocketEnvelope("JOINED_ROOM", envelope.messageId(), roomId.toString(), connectionId,
                 joinedPayload(resumeToken.token(), state)));
+        send(session, new RoomWebSocketEnvelope("PROTOCOL_NEGOTIATED", envelope.messageId(), roomId.toString(), connectionId,
+                protocolNegotiatedPayload(connectionId, negotiationFields, protocol, capabilities)));
         send(session, new RoomWebSocketEnvelope(
                 "PRESENCE_SNAPSHOT",
                 envelope.messageId(),
@@ -212,6 +258,7 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
         }
         presenceService.leave(joined.roomId(), joined.userId(), joined.connectionId(), "CLIENT_LEFT");
         connectionRegistryService.leave(joined.roomId(), joined.userId(), joined.connectionId());
+        protocolSessionRepository.markClosed(joined.connectionId());
         send(session, new RoomWebSocketEnvelope("LEFT_ROOM", envelope.messageId(), joined.roomId().toString(), joined.connectionId(), Map.of()));
         broadcaster.unregister(session.getId());
         broadcaster.broadcast(joined.roomId(), new RoomWebSocketEnvelope(
@@ -270,6 +317,11 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
         if (joined == null) {
             return;
         }
+        CapabilityGateResult gate = capabilityGateService.require(joined.connectionId(), ClientCapability.AWARENESS);
+        if (!gate.allowed()) {
+            sendError(session, envelope.messageId(), envelope.roomId(), gate.code(), gate.reason());
+            return;
+        }
         Map<String, Object> payload = payloadMap(envelope);
         if (payload == null) {
             sendError(session, envelope.messageId(), envelope.roomId(), "INVALID_PAYLOAD", "payload must be an object");
@@ -296,6 +348,11 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
     private void selectionUpdate(WebSocketSession session, RoomWebSocketEnvelope envelope) throws IOException {
         JoinedRoomConnection joined = requireJoinedForRoom(session, envelope);
         if (joined == null) {
+            return;
+        }
+        CapabilityGateResult gate = capabilityGateService.require(joined.connectionId(), ClientCapability.AWARENESS);
+        if (!gate.allowed()) {
+            sendError(session, envelope.messageId(), envelope.roomId(), gate.code(), gate.reason());
             return;
         }
         Map<String, Object> payload = payloadMap(envelope);
@@ -354,6 +411,16 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
             return;
         }
         String operationId = stringPayload(payload, "operationId");
+        CapabilityGateResult gate = capabilityGateService.require(joined.connectionId(), ClientCapability.OPERATIONS);
+        if (!gate.allowed()) {
+            sendOperationNack(session, envelope, joined.connectionId(), OperationSubmitResult.nack(
+                    operationId,
+                    longPayload(payload, "clientSeq"),
+                    gate.code(),
+                    gate.reason(),
+                    null));
+            return;
+        }
         if (sessionQuarantineService.isQuarantined(joined.connectionId())) {
             send(session, new RoomWebSocketEnvelope(
                     "SESSION_QUARANTINED",
@@ -428,6 +495,20 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
         if (joined == null) {
             return;
         }
+        CapabilityGateResult gate = capabilityGateService.require(joined.connectionId(), ClientCapability.SNAPSHOT);
+        if (!gate.allowed()) {
+            sendError(session, envelope.messageId(), envelope.roomId(), gate.code(), gate.reason());
+            return;
+        }
+        try {
+            permissionService.requireView(joined.roomId(), joined.userId());
+        } catch (ForbiddenException exception) {
+            sendError(session, envelope.messageId(), envelope.roomId(), exception.code(), exception.getMessage());
+            return;
+        } catch (NotFoundException exception) {
+            sendError(session, envelope.messageId(), envelope.roomId(), exception.code(), exception.getMessage());
+            return;
+        }
         DocumentLiveState state = documentStateService.getOrInitialize(joined.roomId());
         send(session, new RoomWebSocketEnvelope("DOCUMENT_STATE", envelope.messageId(), joined.roomId().toString(),
                 joined.connectionId(), documentStatePayload(state)));
@@ -474,6 +555,26 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
             sendError(session, envelope.messageId(), envelope.roomId(), "ALREADY_JOINED_ROOM", "Connection has already joined a room");
             return;
         }
+        Map<String, Object> resumePayload = payloadMap(envelope);
+        Map<String, Object> negotiationFields = resumePayload == null ? Map.of() : resumePayload;
+        ProtocolVersionNegotiationResult protocol = protocolVersionNegotiationService.negotiate(negotiationFields);
+        if (!protocol.accepted()) {
+            sendProtocolRejected(session, envelope, protocol);
+            return;
+        }
+        CapabilityNegotiationResult capabilities = clientCapabilityService.negotiate(
+                protocol.negotiatedProtocolVersion(),
+                capabilityPayload(negotiationFields));
+        if (!capabilities.enabled(ClientCapability.RESUME)) {
+            sendError(session, envelope.messageId(), envelope.roomId(),
+                    capabilityGateService.codeFor(ClientCapability.RESUME), "RESUME was not negotiated.");
+            return;
+        }
+        if (!capabilities.enabled(ClientCapability.BACKFILL)) {
+            sendError(session, envelope.messageId(), envelope.roomId(),
+                    capabilityGateService.codeFor(ClientCapability.BACKFILL), "BACKFILL was not negotiated.");
+            return;
+        }
         UUID userId = parseHandshakeUser(session, envelope);
         if (userId == null) {
             return;
@@ -486,14 +587,27 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
             sendError(session, envelope.messageId(), envelope.roomId(), "INVALID_USER", "User does not exist");
             return;
         }
-        Map<String, Object> payload = payloadMap(envelope);
-        String token = payload == null ? null : stringPayload(payload, "resumeToken");
-        Long requestedLastSeen = payload == null ? null : longPayload(payload, "lastSeenRoomSeq");
+        String token = resumePayload == null ? null : stringPayload(resumePayload, "resumeToken");
+        Long requestedLastSeen = resumePayload == null ? null : longPayload(resumePayload, "lastSeenRoomSeq");
         String clientSessionId = stringAttribute(session, RoomWebSocketHandshakeInterceptor.SESSION_ID_ATTRIBUTE);
         ResumeToken validated;
         try {
             validated = resumeTokenService.validate(token, roomId, userId, clientSessionId);
         } catch (ForbiddenException exception) {
+            sendError(session, envelope.messageId(), envelope.roomId(), exception.code(), exception.getMessage());
+            return;
+        }
+
+        long lastSeenRoomSeq = requestedLastSeen == null
+                ? clientOffsetService.lastSeenOrDefault(roomId, userId, clientSessionId, validated.lastSeenRoomSeq())
+                : requestedLastSeen;
+        BackfillResult backfill;
+        try {
+            backfill = roomBackfillService.backfill(roomId, userId, clientSessionId, lastSeenRoomSeq);
+        } catch (ForbiddenException exception) {
+            sendError(session, envelope.messageId(), envelope.roomId(), exception.code(), exception.getMessage());
+            return;
+        } catch (NotFoundException exception) {
             sendError(session, envelope.messageId(), envelope.roomId(), exception.code(), exception.getMessage());
             return;
         }
@@ -510,16 +624,22 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
         connectionRegistryService.join(roomId, userId, connectionId, session.getId(), joined.deviceId(), joined.clientSessionId());
         presenceService.join(roomId, userId, connectionId, session.getId(), joined.deviceId(), joined.clientSessionId());
         broadcaster.register(joined);
+        protocolSessionRepository.createNegotiated(
+                connectionId,
+                session.getId(),
+                roomId,
+                userId,
+                stringPayload(negotiationFields, "clientId"),
+                joined.deviceId(),
+                joined.clientSessionId(),
+                protocol,
+                capabilities);
 
         DocumentLiveState state = documentStateService.getOrInitialize(roomId);
         IssuedResumeToken replacement = resumeTokenService.issue(roomId, userId, connectionId, joined.clientSessionId(), validated.lastSeenRoomSeq());
         send(session, new RoomWebSocketEnvelope("ROOM_RESUMED", envelope.messageId(), roomId.toString(), connectionId,
                 joinedPayload(replacement.token(), state)));
 
-        long lastSeenRoomSeq = requestedLastSeen == null
-                ? clientOffsetService.lastSeenOrDefault(roomId, userId, clientSessionId, validated.lastSeenRoomSeq())
-                : requestedLastSeen;
-        BackfillResult backfill = roomBackfillService.backfill(roomId, userId, clientSessionId, lastSeenRoomSeq);
         if (backfill.resyncRequired()) {
             send(session, new RoomWebSocketEnvelope("RESYNC_REQUIRED", envelope.messageId(), roomId.toString(), connectionId,
                     Map.of("reason", backfill.reason(), "documentState", documentStatePayload(backfill.currentState()))));
@@ -570,6 +690,18 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
                 new RoomWebSocketErrorPayload(code, message)));
     }
 
+    private void sendProtocolRejected(WebSocketSession session, RoomWebSocketEnvelope envelope, ProtocolVersionNegotiationResult protocol)
+            throws IOException {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("requestedProtocolVersion", protocol.requestedProtocolVersion());
+        payload.put("serverPreferredProtocolVersion", protocol.serverPreferredProtocolVersion());
+        payload.put("minimumSupportedProtocolVersion", protocol.minimumSupportedProtocolVersion());
+        payload.put("maximumSupportedProtocolVersion", protocol.maximumSupportedProtocolVersion());
+        payload.put("code", protocol.rejectionCode());
+        payload.put("reason", protocol.rejectionReason());
+        send(session, new RoomWebSocketEnvelope("PROTOCOL_REJECTED", envelope.messageId(), envelope.roomId(), null, payload));
+    }
+
     private void send(WebSocketSession session, RoomWebSocketEnvelope envelope) throws IOException {
         synchronized (session) {
             session.sendMessage(new TextMessage(objectMapper.writeValueAsString(envelope)));
@@ -600,6 +732,12 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
     private String stringPayload(Map<String, Object> payload, String field) {
         Object value = payload.get(field);
         return value == null ? null : value.toString();
+    }
+
+    @SuppressWarnings("unchecked")
+    private Collection<?> capabilityPayload(Map<String, Object> payload) {
+        Object value = payload.get("capabilities");
+        return value instanceof Collection<?> collection ? collection : List.of();
     }
 
     @SuppressWarnings("unchecked")
@@ -713,6 +851,39 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
                     return item;
                 })
                 .toList());
+    }
+
+    private Map<String, Object> protocolNegotiatedPayload(
+            String connectionId,
+            Map<String, Object> requestPayload,
+            ProtocolVersionNegotiationResult protocol,
+            CapabilityNegotiationResult capabilities) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("connectionId", connectionId);
+        payload.put("clientId", stringPayload(requestPayload, "clientId"));
+        payload.put("requestedProtocolVersion", protocol.requestedProtocolVersion());
+        payload.put("negotiatedProtocolVersion", protocol.negotiatedProtocolVersion());
+        payload.put("serverPreferredProtocolVersion", protocol.serverPreferredProtocolVersion());
+        payload.put("legacyDefaultApplied", protocol.legacyDefaultApplied());
+        payload.put("enabledCapabilities", capabilities.enabledCapabilities().stream()
+                .map(ClientCapability::name)
+                .toList());
+        payload.put("disabledCapabilities", capabilities.disabledCapabilities().stream()
+                .map(this::capabilityItemPayload)
+                .toList());
+        payload.put("rejectedCapabilities", capabilities.rejectedCapabilities().stream()
+                .map(this::capabilityItemPayload)
+                .toList());
+        payload.put("reason", "ACCEPTED");
+        return payload;
+    }
+
+    private Map<String, Object> capabilityItemPayload(CapabilityNegotiationItem item) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("capability", item.capability());
+        payload.put("code", item.code());
+        payload.put("reason", item.reason());
+        return payload;
     }
 
     private String stringAttribute(WebSocketSession session, String name) {
