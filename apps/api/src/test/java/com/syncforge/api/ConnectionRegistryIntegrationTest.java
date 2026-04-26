@@ -58,10 +58,10 @@ class ConnectionRegistryIntegrationTest extends AbstractIntegrationTest {
         Fixture fixture = fixture();
         TestSocket socket = TestSocket.connect(websocketUri(), fixture.ownerId(), null, null, new com.fasterxml.jackson.databind.ObjectMapper());
         socket.send(Map.of("type", "JOIN_ROOM", "messageId", "join", "roomId", fixture.roomId().toString(), "payload", Map.of()));
-        String connectionId = socket.next().get("connectionId").toString();
+        String connectionId = socket.nextOfType("JOINED_ROOM").get("connectionId").toString();
 
         socket.send(Map.of("type", "BOGUS", "messageId", "bad", "roomId", fixture.roomId().toString(), "payload", Map.of()));
-        Map<String, Object> error = socket.next();
+        Map<String, Object> error = socket.nextOfType("ERROR");
         assertThat(error).containsEntry("type", "ERROR");
 
         Integer errors = jdbcTemplate.queryForObject(
@@ -76,7 +76,7 @@ class ConnectionRegistryIntegrationTest extends AbstractIntegrationTest {
         TestSocket socket = TestSocket.connect(websocketUri(), fixture.ownerId(), deviceId, clientSessionId,
                 new com.fasterxml.jackson.databind.ObjectMapper());
         socket.send(Map.of("type", "JOIN_ROOM", "messageId", deviceId, "roomId", fixture.roomId().toString(), "payload", Map.of()));
-        assertThat(socket.next()).containsEntry("type", "JOINED_ROOM");
+        assertThat(socket.nextOfType("JOINED_ROOM")).containsEntry("type", "JOINED_ROOM");
         return socket;
     }
 
