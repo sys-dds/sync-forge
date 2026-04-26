@@ -25,10 +25,14 @@ class RoomBackpressureIntegrationTest extends AbstractIntegrationTest {
         Fixture noisy = fixture();
         Fixture quiet = fixture();
         TestSocket editor = TestSocket.connect(websocketUri(), noisy.editorId(), "noisy-device", "noisy-session", objectMapper);
+        TestSocket viewer = TestSocket.connect(websocketUri(), noisy.viewerId(), "viewer-device", "viewer-session", objectMapper);
         TestSocket quietEditor = TestSocket.connect(websocketUri(), quiet.editorId(), "quiet-device", "quiet-session", objectMapper);
-        join(editor, noisy.roomId().toString());
+        Map<String, Object> joinedEditor = join(editor, noisy.roomId().toString());
+        join(viewer, noisy.roomId().toString());
         join(quietEditor, quiet.roomId().toString());
+        String resumeToken = payload(joinedEditor).get("resumeToken").toString();
         editor.drain();
+        viewer.drain();
         quietEditor.drain();
 
         editor.send(operationMessage("backpressure-1", 1, 0, Map.of("position", 0, "text", "a"), noisy.roomId().toString()));
@@ -54,12 +58,37 @@ class RoomBackpressureIntegrationTest extends AbstractIntegrationTest {
                 .containsEntry("currentRevision", 2);
         assertThat(getMap("/api/v1/rooms/" + noisy.roomId() + "/backpressure"))
                 .containsEntry("status", "REJECTING")
-                .containsEntry("pendingEvents", 2);
+                .containsEntry("pendingEvents", 2)
+                .containsEntry("pendingEventsMeaning", "accepted room events not yet acknowledged through ACK_ROOM_EVENT");
 
         editor.send(Map.of("type", "PING", "messageId", "ping-while-rejecting", "roomId", noisy.roomId().toString(), "payload", Map.of()));
         assertThat(editor.nextOfType("PONG")).containsEntry("messageId", "ping-while-rejecting");
+        editor.send(Map.of("type", "HEARTBEAT", "messageId", "heartbeat-while-rejecting", "roomId", noisy.roomId().toString(), "payload", Map.of()));
+        assertThat(editor.nextOfType("PONG")).containsEntry("messageId", "heartbeat-while-rejecting");
         editor.send(Map.of("type", "GET_DOCUMENT_STATE", "messageId", "state-while-rejecting", "roomId", noisy.roomId().toString(), "payload", Map.of()));
         assertThat(editor.nextOfType("DOCUMENT_STATE")).containsEntry("messageId", "state-while-rejecting");
+        TestSocket resumed = TestSocket.connect(websocketUri(), noisy.editorId(), "resume-device", "noisy-session", objectMapper);
+        resumed.send(Map.of(
+                "type", "RESUME_ROOM",
+                "messageId", "resume-while-rejecting",
+                "roomId", noisy.roomId().toString(),
+                "payload", Map.of("resumeToken", resumeToken, "lastSeenRoomSeq", 0)));
+        assertThat(resumed.nextOfType("ROOM_RESUMED")).containsEntry("messageId", "resume-while-rejecting");
+        resumed.close();
+        viewer.send(Map.of("type", "LEAVE_ROOM", "messageId", "leave-while-rejecting", "roomId", noisy.roomId().toString(), "payload", Map.of()));
+        assertThat(viewer.nextOfType("LEFT_ROOM")).containsEntry("messageId", "leave-while-rejecting");
+        editor.send(Map.of(
+                "type", "ACK_ROOM_EVENT",
+                "messageId", "ack-while-rejecting",
+                "roomId", noisy.roomId().toString(),
+                "payload", Map.of("roomSeq", 1)));
+        assertThat(editor.nextOfType("ROOM_EVENT_ACKED")).containsEntry("messageId", "ack-while-rejecting");
+        assertThat(getMap("/api/v1/rooms/" + noisy.roomId() + "/backpressure"))
+                .containsEntry("status", "WARNING")
+                .containsEntry("pendingEvents", 1);
+
+        editor.send(operationMessage("backpressure-4", 4, 2, Map.of("position", 2, "text", "d"), noisy.roomId().toString()));
+        assertThat(payload(editor.nextOfType("OPERATION_ACK"))).containsEntry("operationId", "backpressure-4");
 
         quietEditor.send(operationMessage("quiet-1", 1, 0, Map.of("position", 0, "text", "q"), quiet.roomId().toString()));
         assertThat(payload(quietEditor.nextOfType("OPERATION_ACK"))).containsEntry("operationId", "quiet-1");
@@ -68,12 +97,13 @@ class RoomBackpressureIntegrationTest extends AbstractIntegrationTest {
                 .containsEntry("currentRevision", 1);
 
         editor.close();
+        viewer.close();
         quietEditor.close();
     }
 
-    private void join(TestSocket socket, String roomId) throws Exception {
+    private Map<String, Object> join(TestSocket socket, String roomId) throws Exception {
         socket.send(Map.of("type", "JOIN_ROOM", "messageId", "join-" + roomId, "roomId", roomId, "payload", Map.of()));
-        socket.nextOfType("JOINED_ROOM");
+        return socket.nextOfType("JOINED_ROOM");
     }
 
     private Map<String, Object> operationMessage(

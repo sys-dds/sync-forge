@@ -76,6 +76,15 @@ public class SessionQuarantineRepository {
         return connectionIds;
     }
 
+    public int releaseConnection(String connectionId, OffsetDateTime now) {
+        return jdbcTemplate.update("""
+                update websocket_session_quarantines
+                set released_at = ?
+                where connection_id = ?
+                  and released_at is null
+                """, now, connectionId);
+    }
+
     private Optional<SessionQuarantine> findById(UUID id) {
         return jdbcTemplate.query("""
                 select id, room_id, user_id, connection_id, client_session_id, node_id, reason, started_at, expires_at, released_at

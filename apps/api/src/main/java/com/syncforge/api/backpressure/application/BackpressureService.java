@@ -9,6 +9,12 @@ import org.springframework.stereotype.Service;
 
 @Service
 public class BackpressureService {
+    /*
+     * v1 room pressure tracks accepted room events that active clients have not
+     * acknowledged with ACK_ROOM_EVENT. Essential control messages bypass this
+     * gate; only new SUBMIT_OPERATION messages are rejected while status is
+     * REJECTING.
+     */
     private final BackpressureRepository repository;
     private final int maxRoomPendingEvents;
     private final int warningPendingEvents;

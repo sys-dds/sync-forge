@@ -133,6 +133,7 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
         if (joined != null) {
             presenceService.leave(joined.roomId(), joined.userId(), joined.connectionId(), "SOCKET_CLOSED");
             connectionRegistryService.socketClosed(joined.roomId(), joined.userId(), joined.connectionId(), status.getCode());
+            sessionQuarantineService.releaseDisconnected(joined.connectionId());
             broadcaster.broadcast(joined.roomId(), new RoomWebSocketEnvelope(
                     "PRESENCE_LEFT",
                     null,
@@ -454,7 +455,22 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
     }
 
     private void resumeRoom(WebSocketSession session, RoomWebSocketEnvelope envelope) throws IOException {
-        if (broadcaster.findByWebSocketSessionId(session.getId()) != null) {
+        JoinedRoomConnection activeConnection = broadcaster.findByWebSocketSessionId(session.getId());
+        if (activeConnection != null) {
+            if (sessionQuarantineService.isQuarantined(activeConnection.connectionId())) {
+                send(session, new RoomWebSocketEnvelope(
+                        "SESSION_QUARANTINED",
+                        envelope.messageId(),
+                        envelope.roomId(),
+                        activeConnection.connectionId(),
+                        Map.of(
+                                "connectionId", activeConnection.connectionId(),
+                                "reason", "SLOW_CONSUMER",
+                                "expiresAt", sessionQuarantineService.active(activeConnection.connectionId())
+                                        .map(quarantine -> quarantine.expiresAt().toString())
+                                        .orElse(""))));
+                return;
+            }
             sendError(session, envelope.messageId(), envelope.roomId(), "ALREADY_JOINED_ROOM", "Connection has already joined a room");
             return;
         }

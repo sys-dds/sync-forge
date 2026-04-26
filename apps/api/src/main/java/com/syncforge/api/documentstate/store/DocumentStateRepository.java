@@ -72,6 +72,7 @@ public class DocumentStateRepository {
                 rebuiltAt, OffsetDateTime.now(), roomId);
     }
 
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public UUID startRebuild(UUID roomId, UUID documentId, UUID snapshotId) {
         UUID id = UUID.randomUUID();
         jdbcTemplate.update("""

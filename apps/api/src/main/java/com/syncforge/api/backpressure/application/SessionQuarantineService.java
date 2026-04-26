@@ -51,6 +51,10 @@ public class SessionQuarantineService {
         return releasedConnectionIds.size();
     }
 
+    public int releaseDisconnected(String connectionId) {
+        return repository.releaseConnection(connectionId, OffsetDateTime.now());
+    }
+
     public List<SessionQuarantine> listByRoom(UUID roomId) {
         releaseExpired();
         return repository.listByRoom(roomId);
