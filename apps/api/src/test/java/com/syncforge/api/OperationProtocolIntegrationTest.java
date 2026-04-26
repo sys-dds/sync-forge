@@ -79,9 +79,9 @@ class OperationProtocolIntegrationTest extends AbstractIntegrationTest {
         editor.send(operationMessage("op-dup-1", 1, 0, "TEXT_INSERT", Map.of("position", 0, "text", "a"), fixture.roomId().toString()));
         assertThat(payload(editor.nextOfType("OPERATION_ACK"))).containsEntry("roomSeq", 1).containsEntry("revision", 1);
 
-        editor.send(operationMessage("op-stale-1", 2, 0, "TEXT_INSERT", Map.of("position", 1, "text", "b"), fixture.roomId().toString()));
-        Map<String, Object> stale = editor.nextOfType("OPERATION_NACK");
-        assertThat(payload(stale)).containsEntry("code", "STALE_BASE_REVISION").containsEntry("currentRevision", 1);
+        editor.send(operationMessage("op-stale-1", 2, 0, "TEXT_INSERT", Map.of("position", 0, "text", "b"), fixture.roomId().toString()));
+        Map<String, Object> stale = editor.nextOfType("OPERATION_ACK");
+        assertThat(payload(stale)).containsEntry("operationId", "op-stale-1").containsEntry("roomSeq", 2).containsEntry("revision", 2);
 
         editor.send(operationMessage("op-dup-1", 1, 0, "TEXT_INSERT", Map.of("position", 0, "text", "a"), fixture.roomId().toString()));
         Map<String, Object> duplicate = editor.nextOfType("OPERATION_ACK");
@@ -90,8 +90,8 @@ class OperationProtocolIntegrationTest extends AbstractIntegrationTest {
         editor.send(operationMessage("op-dup-1", 1, 0, "TEXT_INSERT", Map.of("position", 9, "text", "different"), fixture.roomId().toString()));
         assertThat(payload(editor.nextOfType("OPERATION_NACK"))).containsEntry("code", "DUPLICATE_OPERATION_CONFLICT");
 
-        assertThat(getMap("/api/v1/rooms/" + fixture.roomId() + "/sequence")).containsEntry("currentRoomSeq", 1).containsEntry("currentRevision", 1);
-        assertThat(getList("/api/v1/rooms/" + fixture.roomId() + "/operations")).hasSize(1);
+        assertThat(getMap("/api/v1/rooms/" + fixture.roomId() + "/sequence")).containsEntry("currentRoomSeq", 2).containsEntry("currentRevision", 2);
+        assertThat(getList("/api/v1/rooms/" + fixture.roomId() + "/operations")).hasSize(2);
         editor.close();
     }
 

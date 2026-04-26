@@ -4,6 +4,9 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
+import com.syncforge.api.conflict.application.ConflictDetectionService;
+import com.syncforge.api.conflict.model.ConflictResolutionResult;
+import com.syncforge.api.documentstate.application.DocumentStateService;
 import com.syncforge.api.operation.model.OperationRecord;
 import com.syncforge.api.operation.model.OperationSubmitResult;
 import com.syncforge.api.operation.model.RoomSequence;
@@ -12,6 +15,7 @@ import com.syncforge.api.operation.store.OperationAttemptRepository;
 import com.syncforge.api.operation.store.OperationRepository;
 import com.syncforge.api.operation.store.RoomSequenceRepository;
 import com.syncforge.api.room.application.RoomPermissionService;
+import com.syncforge.api.shared.BadRequestException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -23,16 +27,22 @@ public class OperationService {
     private final OperationAttemptRepository attemptRepository;
     private final RoomSequenceRepository sequenceRepository;
     private final RoomPermissionService permissionService;
+    private final DocumentStateService documentStateService;
+    private final ConflictDetectionService conflictDetectionService;
 
     public OperationService(
             OperationRepository operationRepository,
             OperationAttemptRepository attemptRepository,
             RoomSequenceRepository sequenceRepository,
-            RoomPermissionService permissionService) {
+            RoomPermissionService permissionService,
+            DocumentStateService documentStateService,
+            ConflictDetectionService conflictDetectionService) {
         this.operationRepository = operationRepository;
         this.attemptRepository = attemptRepository;
         this.sequenceRepository = sequenceRepository;
         this.permissionService = permissionService;
+        this.documentStateService = documentStateService;
+        this.conflictDetectionService = conflictDetectionService;
     }
 
     @Transactional
@@ -71,24 +81,49 @@ public class OperationService {
         }
 
         RoomSequence sequence = sequenceRepository.lockForUpdate(command.roomId());
-        if (command.baseRevision() != sequence.currentRevision()) {
-            recordRejected(command, "STALE_BASE_REVISION", "baseRevision does not match current room revision",
+        String operationType = command.operationType();
+        Map<String, Object> operation = command.operation();
+        long effectiveBaseRevision = command.baseRevision();
+        boolean transformed = false;
+        if (command.baseRevision() > sequence.currentRevision()) {
+            recordRejected(command, "STALE_BASE_REVISION", "baseRevision is ahead of current room revision",
                     sequence.currentRevision());
             return OperationSubmitResult.nack(command.operationId(), command.clientSeq(), "STALE_BASE_REVISION",
-                    "baseRevision does not match current room revision", sequence.currentRevision());
+                    "baseRevision is ahead of current room revision", sequence.currentRevision());
+        }
+        if (command.baseRevision() < sequence.currentRevision()) {
+            ConflictResolutionResult conflictResult = conflictDetectionService.resolveStale(command, sequence.currentRevision());
+            if (!conflictResult.accepted()) {
+                recordRejected(command, conflictResult.code(), conflictResult.reason(), sequence.currentRevision());
+                return OperationSubmitResult.nack(command.operationId(), command.clientSeq(), conflictResult.code(),
+                        conflictResult.reason(), sequence.currentRevision());
+            }
+            operationType = conflictResult.operationType();
+            operation = conflictResult.operation();
+            effectiveBaseRevision = sequence.currentRevision();
+            transformed = conflictResult.transformed();
+        }
+
+        try {
+            documentStateService.previewApply(command.roomId(), operationType, operation, sequence.currentRevision());
+        } catch (BadRequestException exception) {
+            recordRejected(command, "INVALID_OPERATION_PAYLOAD", exception.getMessage(), sequence.currentRevision());
+            return OperationSubmitResult.nack(command.operationId(), command.clientSeq(), "INVALID_OPERATION_PAYLOAD",
+                    exception.getMessage(), sequence.currentRevision());
         }
 
         long nextRoomSeq = sequence.currentRoomSeq() + 1;
         long nextRevision = sequence.currentRevision() + 1;
         OperationRecord inserted = operationRepository.insert(command.roomId(), command.userId(), command.connectionId(),
-                command.operationId(), command.clientSessionId(), command.clientSeq(), command.baseRevision(),
-                nextRoomSeq, nextRevision, command.operationType(), command.operation());
+                command.operationId(), command.clientSessionId(), command.clientSeq(), effectiveBaseRevision,
+                nextRoomSeq, nextRevision, operationType, operation);
         sequenceRepository.advance(command.roomId(), nextRoomSeq, nextRevision);
+        documentStateService.applyAcceptedOperation(inserted);
         attemptRepository.record(command.roomId(), command.userId(), command.connectionId(), command.operationId(),
                 command.clientSeq(), command.baseRevision(), command.operationType(), command.operation(), "ACCEPTED",
                 null, null, inserted.roomSeq(), inserted.resultingRevision(), null);
         return OperationSubmitResult.ack(inserted.operationId(), inserted.clientSeq(), inserted.roomSeq(), inserted.resultingRevision(),
-                false, inserted.operationType(), inserted.operation());
+                false, inserted.operationType(), inserted.operation(), transformed);
     }
 
     private OperationSubmitResult validate(SubmitOperationCommand command) {
