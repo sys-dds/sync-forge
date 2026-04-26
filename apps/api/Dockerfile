@@ -1,11 +1,13 @@
 FROM eclipse-temurin:21-jdk-jammy AS build
 WORKDIR /workspace
 
-COPY apps/api/.mvn .mvn
-COPY apps/api/mvnw apps/api/mvnw.cmd apps/api/pom.xml ./
+COPY .mvn .mvn
+COPY mvnw mvnw
+COPY mvnw.cmd mvnw.cmd
+COPY pom.xml pom.xml
 RUN ./mvnw -B -DskipTests dependency:go-offline
 
-COPY apps/api/src src
+COPY src src
 RUN ./mvnw -B -DskipTests package
 
 FROM eclipse-temurin:21-jre-jammy AS runtime

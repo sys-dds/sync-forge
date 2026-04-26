@@ -12,6 +12,7 @@ import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -40,6 +41,9 @@ public abstract class AbstractIntegrationTest {
     @Autowired
     TestRestTemplate restTemplate;
 
+    @Autowired
+    JdbcTemplate jdbcTemplate;
+
     String baseUrl;
 
     @DynamicPropertySource
@@ -52,8 +56,25 @@ public abstract class AbstractIntegrationTest {
     }
 
     @BeforeEach
-    void setBaseUrl() {
+    void setBaseUrlAndCleanDatabase() {
         baseUrl = "http://localhost:" + port;
+        jdbcTemplate.execute("""
+                truncate table
+                    room_operations,
+                    room_operation_attempts,
+                    room_sequence_counters,
+                    room_awareness_states,
+                    room_user_presence,
+                    room_presence_connections,
+                    room_connection_events,
+                    room_connection_sessions,
+                    room_memberships,
+                    rooms,
+                    documents,
+                    users,
+                    workspaces
+                cascade
+                """);
     }
 
     @SuppressWarnings("unchecked")

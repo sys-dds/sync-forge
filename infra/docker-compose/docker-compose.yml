@@ -29,8 +29,8 @@ services:
 
   syncforge-api:
     build:
-      context: ../..
-      dockerfile: apps/api/Dockerfile
+      context: ../../apps/api
+      dockerfile: Dockerfile
     depends_on:
       syncforge-postgres:
         condition: service_healthy
