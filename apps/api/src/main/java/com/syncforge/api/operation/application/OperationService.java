@@ -25,7 +25,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class OperationService {
-    private static final Set<String> ALLOWED_TYPES = Set.of("TEXT_INSERT", "TEXT_DELETE", "TEXT_REPLACE", "NOOP");
+    private static final Set<String> ALLOWED_TYPES = Set.of(
+            "TEXT_INSERT", "TEXT_DELETE", "TEXT_REPLACE", "TEXT_INSERT_AFTER", "TEXT_DELETE_ATOMS", "NOOP");
 
     private final OperationRepository operationRepository;
     private final OperationAttemptRepository attemptRepository;
