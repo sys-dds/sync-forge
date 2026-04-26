@@ -9,6 +9,9 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.syncforge.api.awareness.application.AwarenessService;
 import com.syncforge.api.awareness.model.AwarenessState;
+import com.syncforge.api.backpressure.application.BackpressureService;
+import com.syncforge.api.backpressure.application.SessionQuarantineService;
+import com.syncforge.api.backpressure.model.RoomBackpressureState;
 import com.syncforge.api.connection.application.ConnectionRegistryService;
 import com.syncforge.api.documentstate.application.DocumentStateService;
 import com.syncforge.api.documentstate.model.DocumentLiveState;
@@ -17,6 +20,8 @@ import com.syncforge.api.operation.application.OperationService;
 import com.syncforge.api.operation.model.OperationSubmitResult;
 import com.syncforge.api.operation.model.SubmitOperationCommand;
 import com.syncforge.api.presence.application.PresenceService;
+import com.syncforge.api.ratelimit.application.OperationRateLimitService;
+import com.syncforge.api.ratelimit.model.RateLimitDecision;
 import com.syncforge.api.resume.application.ClientOffsetService;
 import com.syncforge.api.resume.application.ResumeTokenService;
 import com.syncforge.api.resume.application.RoomBackfillService;
@@ -28,6 +33,7 @@ import com.syncforge.api.room.store.RoomRepository;
 import com.syncforge.api.shared.ForbiddenException;
 import com.syncforge.api.shared.NotFoundException;
 import com.syncforge.api.shared.RequestValidator;
+import com.syncforge.api.stream.application.RoomEventStreamProperties;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
@@ -44,10 +50,14 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
     private final PresenceService presenceService;
     private final AwarenessService awarenessService;
     private final OperationService operationService;
+    private final OperationRateLimitService operationRateLimitService;
+    private final BackpressureService backpressureService;
+    private final SessionQuarantineService sessionQuarantineService;
     private final DocumentStateService documentStateService;
     private final ResumeTokenService resumeTokenService;
     private final ClientOffsetService clientOffsetService;
     private final RoomBackfillService roomBackfillService;
+    private final RoomEventStreamProperties streamProperties;
     private final RoomWebSocketBroadcaster broadcaster;
 
     public RoomWebSocketHandler(
@@ -59,10 +69,14 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
             PresenceService presenceService,
             AwarenessService awarenessService,
             OperationService operationService,
+            OperationRateLimitService operationRateLimitService,
+            BackpressureService backpressureService,
+            SessionQuarantineService sessionQuarantineService,
             DocumentStateService documentStateService,
             ResumeTokenService resumeTokenService,
             ClientOffsetService clientOffsetService,
             RoomBackfillService roomBackfillService,
+            RoomEventStreamProperties streamProperties,
             RoomWebSocketBroadcaster broadcaster) {
         this.objectMapper = objectMapper;
         this.userRepository = userRepository;
@@ -72,10 +86,14 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
         this.presenceService = presenceService;
         this.awarenessService = awarenessService;
         this.operationService = operationService;
+        this.operationRateLimitService = operationRateLimitService;
+        this.backpressureService = backpressureService;
+        this.sessionQuarantineService = sessionQuarantineService;
         this.documentStateService = documentStateService;
         this.resumeTokenService = resumeTokenService;
         this.clientOffsetService = clientOffsetService;
         this.roomBackfillService = roomBackfillService;
+        this.streamProperties = streamProperties;
         this.broadcaster = broadcaster;
     }
 
@@ -334,12 +352,46 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
                     "payload must be an object", null));
             return;
         }
+        String operationId = stringPayload(payload, "operationId");
+        if (sessionQuarantineService.isQuarantined(joined.connectionId())) {
+            send(session, new RoomWebSocketEnvelope(
+                    "SESSION_QUARANTINED",
+                    envelope.messageId(),
+                    envelope.roomId(),
+                    joined.connectionId(),
+                    Map.of(
+                            "connectionId", joined.connectionId(),
+                            "reason", "SLOW_CONSUMER",
+                            "expiresAt", sessionQuarantineService.active(joined.connectionId())
+                                    .map(quarantine -> quarantine.expiresAt().toString())
+                                    .orElse(""))));
+            return;
+        }
+        if (backpressureService.shouldRejectNewOperation(joined.roomId())) {
+            sendOperationNack(session, envelope, joined.connectionId(), OperationSubmitResult.nack(
+                    operationId,
+                    longPayload(payload, "clientSeq"),
+                    "ROOM_BACKPRESSURE",
+                    "room is rejecting new operations due to pending event pressure",
+                    null));
+            return;
+        }
+        RateLimitDecision rateLimitDecision = operationRateLimitService.check(
+                joined.roomId(),
+                joined.userId(),
+                joined.connectionId(),
+                joined.clientSessionId(),
+                operationId);
+        if (!rateLimitDecision.allowed()) {
+            sendRateLimited(session, envelope, joined.connectionId(), rateLimitDecision);
+            return;
+        }
         OperationSubmitResult result = operationService.submit(new SubmitOperationCommand(
                 joined.roomId(),
                 joined.userId(),
                 joined.connectionId(),
                 joined.clientSessionId(),
-                stringPayload(payload, "operationId"),
+                operationId,
                 longPayload(payload, "clientSeq"),
                 longPayload(payload, "baseRevision"),
                 stringPayload(payload, "operationType"),
@@ -347,12 +399,23 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
         if (result.accepted()) {
             sendOperationAck(session, envelope, joined.connectionId(), result);
             if (!result.duplicate()) {
-                broadcaster.broadcast(joined.roomId(), new RoomWebSocketEnvelope(
-                        "OPERATION_APPLIED",
-                        envelope.messageId(),
-                        joined.roomId().toString(),
-                        joined.connectionId(),
-                        operationAppliedPayload(joined, result)));
+                if (!streamProperties.enabled()) {
+                    broadcaster.broadcast(joined.roomId(), new RoomWebSocketEnvelope(
+                            "OPERATION_APPLIED",
+                            envelope.messageId(),
+                            joined.roomId().toString(),
+                            joined.connectionId(),
+                            operationAppliedPayload(joined, result)));
+                }
+                RoomBackpressureState backpressure = backpressureService.recordAcceptedRoomEvent(joined.roomId());
+                if (backpressure.warning()) {
+                    broadcaster.broadcast(joined.roomId(), new RoomWebSocketEnvelope(
+                            "BACKPRESSURE_WARNING",
+                            envelope.messageId(),
+                            joined.roomId().toString(),
+                            joined.connectionId(),
+                            backpressureWarningPayload(joined.roomId(), backpressure)));
+                }
             }
             return;
         }
@@ -381,6 +444,7 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
             return;
         }
         clientOffsetService.acknowledge(joined.roomId(), joined.userId(), joined.clientSessionId(), roomSeq);
+        backpressureService.acknowledgeRoomEvent(joined.roomId());
         String token = payload == null ? null : stringPayload(payload, "resumeToken");
         if (token != null && !token.isBlank()) {
             resumeTokenService.updateLastSeen(token, roomSeq);
@@ -567,6 +631,16 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
         send(session, new RoomWebSocketEnvelope("OPERATION_NACK", envelope.messageId(), envelope.roomId(), connectionId, payload));
     }
 
+    private void sendRateLimited(WebSocketSession session, RoomWebSocketEnvelope envelope, String connectionId, RateLimitDecision decision) throws IOException {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("code", "OPERATION_RATE_LIMITED");
+        payload.put("limit", decision.limitValue());
+        payload.put("windowSeconds", decision.windowSeconds());
+        payload.put("retryAfterMs", decision.retryAfterMs());
+        payload.put("limitKey", decision.limitKey());
+        send(session, new RoomWebSocketEnvelope("RATE_LIMITED", envelope.messageId(), envelope.roomId(), connectionId, payload));
+    }
+
     private Map<String, Object> operationAppliedPayload(JoinedRoomConnection joined, OperationSubmitResult result) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("operationId", result.operationId());
@@ -577,6 +651,16 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
         payload.put("operationType", result.operationType());
         payload.put("operation", result.operation());
         payload.put("transformed", result.transformed());
+        return payload;
+    }
+
+    private Map<String, Object> backpressureWarningPayload(UUID roomId, RoomBackpressureState state) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("roomId", roomId.toString());
+        payload.put("policy", "DELAY_OR_REJECT_NEW_OPERATIONS");
+        payload.put("pendingEvents", state.pendingEvents());
+        payload.put("maxPendingEvents", state.maxPendingEvents());
+        payload.put("status", state.status());
         return payload;
     }
 

@@ -59,6 +59,7 @@ public class SnapshotReplayService {
                     rebuilt.currentRoomSeq(), rebuilt.currentRevision(), rebuilt.contentChecksum(), true, equivalent);
         } catch (RuntimeException exception) {
             documentStateRepository.failRebuild(rebuildId, exception.getMessage());
+            documentStateRepository.recordFailedRebuild(roomId, snapshot.documentId(), snapshot.id(), exception.getMessage());
             throw exception;
         }
     }

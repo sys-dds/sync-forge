@@ -37,6 +37,20 @@ class FoundationIntegrationTest extends AbstractIntegrationTest {
         assertThat(exit).isZero();
     }
 
+    @Test
+    void systemNodeEndpointWritesHeartbeat() {
+        ResponseEntity<Map> node = restTemplate.getForEntity(baseUrl + "/api/v1/system/node", Map.class);
+        assertThat(node.getStatusCode().is2xxSuccessful()).isTrue();
+        assertThat(node.getBody())
+                .containsEntry("nodeId", "test-node-1")
+                .containsEntry("status", "ACTIVE")
+                .containsEntry("heartbeatTtlSeconds", 30);
+        assertThat(jdbcTemplate.queryForObject("""
+                select count(*) from syncforge_node_heartbeats
+                where node_id = 'test-node-1' and status = 'ACTIVE'
+                """, Integer.class)).isOne();
+    }
+
     private boolean commandAvailable(String command) {
         try {
             Process process = new ProcessBuilder(command, "--version").start();

@@ -9,3 +9,25 @@ spring:
       port: 1
   flyway:
     enabled: true
+
+syncforge:
+  node:
+    node-id: test-node-1
+    heartbeat-ttl-seconds: 30
+  websocket:
+    max-outbound-queue-size: 100
+    slow-consumer-queued-messages: 80
+    send-timeout-ms: 500
+    quarantine-ttl-seconds: 60
+  rate-limit:
+    operations-per-connection-per-second: 1000
+    operations-per-user-per-room-per-minute: 10000
+  backpressure:
+    max-room-pending-events: 1000
+    warning-pending-events: 800
+  redis:
+    stream:
+      room-key-prefix: "syncforge:room-events:"
+      maxlen: 10000
+      consumer-poll-ms: 100
+      enabled: false

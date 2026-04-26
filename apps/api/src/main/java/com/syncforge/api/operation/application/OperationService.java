@@ -16,6 +16,7 @@ import com.syncforge.api.operation.store.OperationRepository;
 import com.syncforge.api.operation.store.RoomSequenceRepository;
 import com.syncforge.api.room.application.RoomPermissionService;
 import com.syncforge.api.shared.BadRequestException;
+import com.syncforge.api.stream.application.RoomEventStreamPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -29,6 +30,7 @@ public class OperationService {
     private final RoomPermissionService permissionService;
     private final DocumentStateService documentStateService;
     private final ConflictDetectionService conflictDetectionService;
+    private final RoomEventStreamPublisher streamPublisher;
 
     public OperationService(
             OperationRepository operationRepository,
@@ -36,13 +38,15 @@ public class OperationService {
             RoomSequenceRepository sequenceRepository,
             RoomPermissionService permissionService,
             DocumentStateService documentStateService,
-            ConflictDetectionService conflictDetectionService) {
+            ConflictDetectionService conflictDetectionService,
+            RoomEventStreamPublisher streamPublisher) {
         this.operationRepository = operationRepository;
         this.attemptRepository = attemptRepository;
         this.sequenceRepository = sequenceRepository;
         this.permissionService = permissionService;
         this.documentStateService = documentStateService;
         this.conflictDetectionService = conflictDetectionService;
+        this.streamPublisher = streamPublisher;
     }
 
     @Transactional
@@ -119,6 +123,7 @@ public class OperationService {
                 nextRoomSeq, nextRevision, operationType, operation);
         sequenceRepository.advance(command.roomId(), nextRoomSeq, nextRevision);
         documentStateService.applyAcceptedOperation(inserted);
+        streamPublisher.publishAcceptedOperation(inserted, transformed);
         attemptRepository.record(command.roomId(), command.userId(), command.connectionId(), command.operationId(),
                 command.clientSeq(), command.baseRevision(), command.operationType(), command.operation(), "ACCEPTED",
                 null, null, inserted.roomSeq(), inserted.resultingRevision(), null);

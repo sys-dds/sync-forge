@@ -11,6 +11,8 @@ import com.syncforge.api.documentstate.model.DocumentLiveState;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 
 @Repository
 public class DocumentStateRepository {
@@ -93,12 +95,23 @@ public class DocumentStateRepository {
                 state.contentChecksum(), rebuildId);
     }
 
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void failRebuild(UUID rebuildId, String message) {
         jdbcTemplate.update("""
                 update document_state_rebuild_runs
                 set completed_at = ?, status = 'FAILED', error_message = ?
                 where id = ?
                 """, OffsetDateTime.now(), message, rebuildId);
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void recordFailedRebuild(UUID roomId, UUID documentId, UUID snapshotId, String message) {
+        jdbcTemplate.update("""
+                insert into document_state_rebuild_runs (
+                    id, room_id, document_id, completed_at, status, from_snapshot_id, error_message
+                )
+                values (?, ?, ?, ?, 'FAILED', ?, ?)
+                """, UUID.randomUUID(), roomId, documentId, OffsetDateTime.now(), snapshotId, message);
     }
 
     private DocumentLiveState mapState(ResultSet rs, int rowNum) throws SQLException {
