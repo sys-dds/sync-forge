@@ -463,7 +463,13 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
                 longPayload(payload, "clientSeq"),
                 longPayload(payload, "baseRevision"),
                 stringPayload(payload, "operationType"),
-                mapPayload(payload, "operation")));
+                mapPayload(payload, "operation"),
+                booleanPayload(payload, "offline"),
+                stringPayload(payload, "clientOperationId"),
+                longPayload(payload, "baseRoomSeq"),
+                longPayload(payload, "dependsOnRoomSeq"),
+                stringListPayload(payload, "dependsOnOperationIds"),
+                stringPayload(payload, "canonicalPayloadHash")));
         if (result.accepted()) {
             sendOperationAck(session, envelope, joined.connectionId(), result);
             if (!result.duplicate()) {
@@ -734,6 +740,11 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
         return null;
     }
 
+    private Boolean booleanPayload(Map<String, Object> payload, String field) {
+        Object value = payload.get(field);
+        return value instanceof Boolean bool ? bool : null;
+    }
+
     private String stringPayload(Map<String, Object> payload, String field) {
         Object value = payload.get(field);
         return value == null ? null : value.toString();
@@ -749,6 +760,16 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
     private Map<String, Object> mapPayload(Map<String, Object> payload, String field) {
         Object value = payload.get(field);
         return value instanceof Map<?, ?> map ? (Map<String, Object>) map : null;
+    }
+
+    private List<String> stringListPayload(Map<String, Object> payload, String field) {
+        Object value = payload.get(field);
+        if (!(value instanceof Collection<?> collection)) {
+            return List.of();
+        }
+        return collection.stream()
+                .map(item -> item == null ? null : item.toString())
+                .toList();
     }
 
     @SuppressWarnings("unchecked")
