@@ -64,6 +64,25 @@ public class OperationRepository {
         return records.stream().findFirst();
     }
 
+    public Optional<OperationRecord> findByRoomSeq(UUID roomId, long roomSeq) {
+        List<OperationRecord> records = jdbcTemplate.query("""
+                select id, room_id, user_id, connection_id, operation_id, client_session_id, client_seq,
+                       base_revision, room_seq, resulting_revision, operation_type, operation_json, created_at
+                from room_operations
+                where room_id = ? and room_seq = ?
+                """, rowMapper, roomId, roomSeq);
+        return records.stream().findFirst();
+    }
+
+    public boolean existsOperationIdOutsideRoom(String operationId, UUID roomId) {
+        Long count = jdbcTemplate.queryForObject("""
+                select count(*)
+                from room_operations
+                where operation_id = ? and room_id <> ?
+                """, Long.class, operationId, roomId);
+        return count != null && count > 0;
+    }
+
     public List<OperationRecord> findByRoom(UUID roomId) {
         return jdbcTemplate.query("""
                 select id, room_id, user_id, connection_id, operation_id, client_session_id, client_seq,

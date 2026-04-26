@@ -77,6 +77,7 @@ public abstract class AbstractIntegrationTest {
                     room_conflict_resolution_traces,
                     document_state_rebuild_runs,
                     document_live_states,
+                    offline_operation_submissions,
                     room_event_outbox,
                     room_operations,
                     room_operation_attempts,
