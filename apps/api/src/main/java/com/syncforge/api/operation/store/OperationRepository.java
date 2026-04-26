@@ -94,6 +94,15 @@ public class OperationRepository {
                 """, rowMapper, roomId, roomSeq);
     }
 
+    public long maxRoomSeq(UUID roomId) {
+        Long maxRoomSeq = jdbcTemplate.queryForObject("""
+                select coalesce(max(room_seq), 0)
+                from room_operations
+                where room_id = ?
+                """, Long.class, roomId);
+        return maxRoomSeq == null ? 0 : maxRoomSeq;
+    }
+
     public boolean sameOperation(OperationRecord record, String operationType, Map<String, Object> operation) {
         return record.operationType().equals(operationType)
                 && objectMapper.valueToTree(record.operation()).equals(objectMapper.valueToTree(operation));

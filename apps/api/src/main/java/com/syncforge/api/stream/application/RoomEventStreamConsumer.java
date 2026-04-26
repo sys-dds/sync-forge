@@ -77,13 +77,18 @@ public class RoomEventStreamConsumer {
         long lastRoomSeq = offset.lastRoomSeq();
         for (MapRecord<String, Object, Object> record : records) {
             Map<Object, Object> value = record.getValue();
+            UUID eventRoomId = UUID.fromString(field(value, "roomId"));
+            if (!roomId.equals(eventRoomId)) {
+                continue;
+            }
             long roomSeq = Long.parseLong(field(value, "roomSeq"));
             if (roomSeq <= lastRoomSeq) {
                 continue;
             }
-            UUID eventRoomId = UUID.fromString(field(value, "roomId"));
-            if (!roomId.equals(eventRoomId)) {
-                continue;
+            if (roomSeq > lastRoomSeq + 1) {
+                offsetRepository.markGap(roomId, nodeIdentity.nodeId(), streamKey, lastRoomSeq + 1, roomSeq,
+                        "Expected roomSeq " + (lastRoomSeq + 1) + " but observed " + roomSeq);
+                break;
             }
             broadcaster.broadcast(roomId, toEnvelope(value));
             String recordId = record.getId().getValue();

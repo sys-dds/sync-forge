@@ -5,29 +5,17 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicReference;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.syncforge.api.backpressure.application.BackpressureService;
-import com.syncforge.api.node.NodeIdentity;
+import com.syncforge.api.delivery.RoomEventOutboxRepository;
 import com.syncforge.api.operation.application.OperationService;
-import com.syncforge.api.operation.model.OperationRecord;
 import com.syncforge.api.operation.model.OperationSubmitResult;
 import com.syncforge.api.operation.model.SubmitOperationCommand;
-import com.syncforge.api.stream.application.RoomEventStreamProperties;
-import com.syncforge.api.stream.application.RoomEventStreamPublisher;
 import com.syncforge.api.stream.application.RoomStreamKeyFactory;
-import com.syncforge.api.stream.application.StreamPublishException;
-import com.syncforge.api.stream.model.RoomStreamEvent;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Import;
-import org.springframework.context.annotation.Primary;
 import org.springframework.data.domain.Range;
 import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -41,10 +29,7 @@ import org.springframework.test.context.TestPropertySource;
         "syncforge.backpressure.warning-pending-events=100",
         "syncforge.backpressure.max-room-pending-events=100"
 })
-@Import(RoomSequenceGapInvariantIntegrationTest.StreamPublisherTestConfig.class)
 class RoomSequenceGapInvariantIntegrationTest extends AbstractIntegrationTest {
-    private static final AtomicReference<String> FAILING_OPERATION_ID = new AtomicReference<>();
-
     @Autowired
     ObjectMapper objectMapper;
 
@@ -60,10 +45,8 @@ class RoomSequenceGapInvariantIntegrationTest extends AbstractIntegrationTest {
     @Autowired
     RoomStreamKeyFactory keyFactory;
 
-    @BeforeEach
-    void clearPublisherFailure() {
-        FAILING_OPERATION_ID.set(null);
-    }
+    @Autowired
+    RoomEventOutboxRepository outboxRepository;
 
     @Test
     void acceptedRoomSequencesStayMonotonicGaplessAcrossDirectRejectsDuplicatesTransformsAndRedisFailure() {
@@ -98,19 +81,18 @@ class RoomSequenceGapInvariantIntegrationTest extends AbstractIntegrationTest {
         assertThat(transformed.accepted()).isTrue();
         assertThat(transformed.roomSeq()).isEqualTo(4);
 
-        FAILING_OPERATION_ID.set("seq-stream-fails");
-        assertThatThrownBy(() -> submit(fixture, fixture.editorId(), "seq-stream-fails", 6, 4, "TEXT_INSERT",
-                Map.of("position", 4, "text", "!")))
-                .isInstanceOf(StreamPublishException.class);
-        assertThat(maxSeq(fixture.roomId())).isEqualTo(4);
+        OperationSubmitResult delayedDelivery = submit(fixture, fixture.editorId(), "seq-delivery-delayed", 6, 4,
+                "TEXT_INSERT", Map.of("position", 4, "text", "!"));
+        assertThat(delayedDelivery.accepted()).isTrue();
+        assertThat(delayedDelivery.roomSeq()).isEqualTo(5);
+        assertThat(outboxRepository.findByRoomSeq(fixture.roomId(), 5)).isPresent();
+        assertThat(maxSeq(fixture.roomId())).isEqualTo(5);
         assertGapless(fixture.roomId());
         assertThat(counterSeq(fixture.roomId())).isEqualTo(maxSeq(fixture.roomId()));
 
         List<MapRecord<String, Object, Object>> stream = redisTemplate.opsForStream()
                 .range(keyFactory.roomStreamKey(fixture.roomId()), Range.unbounded());
-        assertThat(stream).hasSize(4);
-        assertThat(stream).extracting(record -> record.getValue().get("roomSeq"))
-                .containsExactly("1", "2", "3", "4");
+        assertThat(stream).isEmpty();
     }
 
     @Test
@@ -219,25 +201,4 @@ class RoomSequenceGapInvariantIntegrationTest extends AbstractIntegrationTest {
         return (Map<String, Object>) envelope.get("payload");
     }
 
-    @TestConfiguration(proxyBeanMethods = false)
-    static class StreamPublisherTestConfig {
-        @Bean
-        @Primary
-        RoomEventStreamPublisher sequenceInvariantStreamPublisher(
-                StringRedisTemplate redisTemplate,
-                ObjectMapper objectMapper,
-                RoomEventStreamProperties properties,
-                RoomStreamKeyFactory keyFactory,
-                NodeIdentity nodeIdentity) {
-            return new RoomEventStreamPublisher(redisTemplate, objectMapper, properties, keyFactory, nodeIdentity) {
-                @Override
-                public Optional<RoomStreamEvent> publishAcceptedOperation(OperationRecord operation, boolean transformed) {
-                    if (operation.operationId().equals(FAILING_OPERATION_ID.get())) {
-                        throw new StreamPublishException("forced stream failure", new RuntimeException("forced"));
-                    }
-                    return super.publishAcceptedOperation(operation, transformed);
-                }
-            };
-        }
-    }
 }

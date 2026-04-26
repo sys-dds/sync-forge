@@ -7,6 +7,7 @@ import java.util.Map;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.syncforge.api.backpressure.application.SessionQuarantineService;
+import com.syncforge.api.delivery.RoomEventOutboxDispatcher;
 import com.syncforge.api.stream.application.RoomEventStreamConsumer;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -26,6 +27,9 @@ class Sync026To035FunctionalIntegrationTest extends AbstractIntegrationTest {
 
     @Autowired
     RoomEventStreamConsumer streamConsumer;
+
+    @Autowired
+    RoomEventOutboxDispatcher outboxDispatcher;
 
     @Autowired
     SessionQuarantineService quarantineService;
@@ -51,6 +55,7 @@ class Sync026To035FunctionalIntegrationTest extends AbstractIntegrationTest {
 
         noisyEditor.send(operationMessage("functional-noisy-1", 1, 0, Map.of("position", 0, "text", "a"), noisy.roomId().toString()));
         assertThat(payload(noisyEditor.nextOfType("OPERATION_ACK"))).containsEntry("operationId", "functional-noisy-1");
+        assertThat(outboxDispatcher.dispatchOnce(10)).isEqualTo(1);
         assertThat(streamConsumer.pollRoom(noisy.roomId())).isEqualTo(1);
         assertThat(payload(noisyListener.nextOfType("OPERATION_APPLIED"))).containsEntry("operationId", "functional-noisy-1");
         assertThat(slowConsumer.hasMessageOfTypeWithin("OPERATION_APPLIED", 300)).isFalse();

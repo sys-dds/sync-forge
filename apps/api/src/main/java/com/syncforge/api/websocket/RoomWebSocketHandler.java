@@ -525,7 +525,12 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
             sendError(session, envelope.messageId(), envelope.roomId(), "INVALID_PAYLOAD", "roomSeq is required and must be non-negative");
             return;
         }
-        clientOffsetService.acknowledge(joined.roomId(), joined.userId(), joined.clientSessionId(), roomSeq);
+        boolean acknowledged = clientOffsetService.acknowledge(joined.roomId(), joined.userId(), joined.clientSessionId(), roomSeq);
+        if (!acknowledged) {
+            sendError(session, envelope.messageId(), envelope.roomId(), "ACK_BEYOND_CANONICAL_ROOM_SEQ",
+                    "ACK roomSeq is ahead of the canonical accepted operation log.");
+            return;
+        }
         backpressureService.acknowledgeRoomEvent(joined.roomId());
         String token = payload == null ? null : stringPayload(payload, "resumeToken");
         if (token != null && !token.isBlank()) {

@@ -2,22 +2,30 @@ package com.syncforge.api.resume.application;
 
 import java.util.UUID;
 
+import com.syncforge.api.operation.store.OperationRepository;
 import com.syncforge.api.resume.store.ClientOffsetRepository;
 import org.springframework.stereotype.Service;
 
 @Service
 public class ClientOffsetService {
     private final ClientOffsetRepository clientOffsetRepository;
+    private final OperationRepository operationRepository;
 
-    public ClientOffsetService(ClientOffsetRepository clientOffsetRepository) {
+    public ClientOffsetService(ClientOffsetRepository clientOffsetRepository, OperationRepository operationRepository) {
         this.clientOffsetRepository = clientOffsetRepository;
+        this.operationRepository = operationRepository;
     }
 
-    public void acknowledge(UUID roomId, UUID userId, String clientSessionId, long roomSeq) {
+    public boolean acknowledge(UUID roomId, UUID userId, String clientSessionId, long roomSeq) {
         if (clientSessionId == null || clientSessionId.isBlank()) {
-            return;
+            return true;
+        }
+        long maxAcceptedRoomSeq = operationRepository.maxRoomSeq(roomId);
+        if (roomSeq > maxAcceptedRoomSeq) {
+            return false;
         }
         clientOffsetRepository.upsert(roomId, userId, clientSessionId, roomSeq);
+        return true;
     }
 
     public long lastSeenOrDefault(UUID roomId, UUID userId, String clientSessionId, long fallback) {
