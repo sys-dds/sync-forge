@@ -74,6 +74,26 @@ public class OperationRepository {
                 """, rowMapper, roomId);
     }
 
+    public List<OperationRecord> findByRoomAfterRevision(UUID roomId, long baseRevision) {
+        return jdbcTemplate.query("""
+                select id, room_id, user_id, connection_id, operation_id, client_session_id, client_seq,
+                       base_revision, room_seq, resulting_revision, operation_type, operation_json, created_at
+                from room_operations
+                where room_id = ? and resulting_revision > ?
+                order by room_seq asc
+                """, rowMapper, roomId, baseRevision);
+    }
+
+    public List<OperationRecord> findByRoomAfterRoomSeq(UUID roomId, long roomSeq) {
+        return jdbcTemplate.query("""
+                select id, room_id, user_id, connection_id, operation_id, client_session_id, client_seq,
+                       base_revision, room_seq, resulting_revision, operation_type, operation_json, created_at
+                from room_operations
+                where room_id = ? and room_seq > ?
+                order by room_seq asc
+                """, rowMapper, roomId, roomSeq);
+    }
+
     public boolean sameOperation(OperationRecord record, String operationType, Map<String, Object> operation) {
         return record.operationType().equals(operationType)
                 && objectMapper.valueToTree(record.operation()).equals(objectMapper.valueToTree(operation));

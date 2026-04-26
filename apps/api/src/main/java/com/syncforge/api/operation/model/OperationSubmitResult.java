@@ -13,7 +13,8 @@ public record OperationSubmitResult(
         String message,
         Long currentRevision,
         String operationType,
-        Map<String, Object> operation
+        Map<String, Object> operation,
+        boolean transformed
 ) {
     public static OperationSubmitResult ack(
             String operationId,
@@ -23,8 +24,20 @@ public record OperationSubmitResult(
             boolean duplicate,
             String operationType,
             Map<String, Object> operation) {
+        return ack(operationId, clientSeq, roomSeq, revision, duplicate, operationType, operation, false);
+    }
+
+    public static OperationSubmitResult ack(
+            String operationId,
+            long clientSeq,
+            long roomSeq,
+            long revision,
+            boolean duplicate,
+            String operationType,
+            Map<String, Object> operation,
+            boolean transformed) {
         return new OperationSubmitResult(true, duplicate, operationId, clientSeq, roomSeq, revision, null, null, null,
-                operationType, operation);
+                operationType, operation, transformed);
     }
 
     public static OperationSubmitResult nack(
@@ -34,6 +47,6 @@ public record OperationSubmitResult(
             String message,
             Long currentRevision) {
         return new OperationSubmitResult(false, false, operationId, clientSeq, null, null, code, message, currentRevision,
-                null, Map.of());
+                null, Map.of(), false);
     }
 }

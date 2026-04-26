@@ -10,11 +10,19 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.syncforge.api.awareness.application.AwarenessService;
 import com.syncforge.api.awareness.model.AwarenessState;
 import com.syncforge.api.connection.application.ConnectionRegistryService;
+import com.syncforge.api.documentstate.application.DocumentStateService;
+import com.syncforge.api.documentstate.model.DocumentLiveState;
 import com.syncforge.api.identity.store.UserRepository;
 import com.syncforge.api.operation.application.OperationService;
 import com.syncforge.api.operation.model.OperationSubmitResult;
 import com.syncforge.api.operation.model.SubmitOperationCommand;
 import com.syncforge.api.presence.application.PresenceService;
+import com.syncforge.api.resume.application.ClientOffsetService;
+import com.syncforge.api.resume.application.ResumeTokenService;
+import com.syncforge.api.resume.application.RoomBackfillService;
+import com.syncforge.api.resume.model.BackfillResult;
+import com.syncforge.api.resume.model.IssuedResumeToken;
+import com.syncforge.api.resume.model.ResumeToken;
 import com.syncforge.api.room.application.RoomPermissionService;
 import com.syncforge.api.room.store.RoomRepository;
 import com.syncforge.api.shared.ForbiddenException;
@@ -36,6 +44,10 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
     private final PresenceService presenceService;
     private final AwarenessService awarenessService;
     private final OperationService operationService;
+    private final DocumentStateService documentStateService;
+    private final ResumeTokenService resumeTokenService;
+    private final ClientOffsetService clientOffsetService;
+    private final RoomBackfillService roomBackfillService;
     private final RoomWebSocketBroadcaster broadcaster;
 
     public RoomWebSocketHandler(
@@ -47,6 +59,10 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
             PresenceService presenceService,
             AwarenessService awarenessService,
             OperationService operationService,
+            DocumentStateService documentStateService,
+            ResumeTokenService resumeTokenService,
+            ClientOffsetService clientOffsetService,
+            RoomBackfillService roomBackfillService,
             RoomWebSocketBroadcaster broadcaster) {
         this.objectMapper = objectMapper;
         this.userRepository = userRepository;
@@ -56,6 +72,10 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
         this.presenceService = presenceService;
         this.awarenessService = awarenessService;
         this.operationService = operationService;
+        this.documentStateService = documentStateService;
+        this.resumeTokenService = resumeTokenService;
+        this.clientOffsetService = clientOffsetService;
+        this.roomBackfillService = roomBackfillService;
         this.broadcaster = broadcaster;
     }
 
@@ -82,6 +102,9 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
             case "CURSOR_UPDATE" -> cursorUpdate(session, envelope);
             case "SELECTION_UPDATE" -> selectionUpdate(session, envelope);
             case "SUBMIT_OPERATION" -> submitOperation(session, envelope);
+            case "GET_DOCUMENT_STATE" -> getDocumentState(session, envelope);
+            case "ACK_ROOM_EVENT" -> ackRoomEvent(session, envelope);
+            case "RESUME_ROOM" -> resumeRoom(session, envelope);
             default -> sendError(session, envelope.messageId(), envelope.roomId(), "UNKNOWN_MESSAGE_TYPE", "Unknown message type");
         }
     }
@@ -144,7 +167,10 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
         connectionRegistryService.join(roomId, userId, connectionId, session.getId(), joined.deviceId(), joined.clientSessionId());
         presenceService.join(roomId, userId, connectionId, session.getId(), joined.deviceId(), joined.clientSessionId());
         broadcaster.register(joined);
-        send(session, new RoomWebSocketEnvelope("JOINED_ROOM", envelope.messageId(), roomId.toString(), connectionId, Map.of()));
+        DocumentLiveState state = documentStateService.getOrInitialize(roomId);
+        IssuedResumeToken resumeToken = resumeTokenService.issue(roomId, userId, connectionId, joined.clientSessionId(), state.currentRoomSeq());
+        send(session, new RoomWebSocketEnvelope("JOINED_ROOM", envelope.messageId(), roomId.toString(), connectionId,
+                joinedPayload(resumeToken.token(), state)));
         send(session, new RoomWebSocketEnvelope(
                 "PRESENCE_SNAPSHOT",
                 envelope.messageId(),
@@ -333,6 +359,96 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
         sendOperationNack(session, envelope, joined.connectionId(), result);
     }
 
+    private void getDocumentState(WebSocketSession session, RoomWebSocketEnvelope envelope) throws IOException {
+        JoinedRoomConnection joined = requireJoinedForRoom(session, envelope);
+        if (joined == null) {
+            return;
+        }
+        DocumentLiveState state = documentStateService.getOrInitialize(joined.roomId());
+        send(session, new RoomWebSocketEnvelope("DOCUMENT_STATE", envelope.messageId(), joined.roomId().toString(),
+                joined.connectionId(), documentStatePayload(state)));
+    }
+
+    private void ackRoomEvent(WebSocketSession session, RoomWebSocketEnvelope envelope) throws IOException {
+        JoinedRoomConnection joined = requireJoinedForRoom(session, envelope);
+        if (joined == null) {
+            return;
+        }
+        Map<String, Object> payload = payloadMap(envelope);
+        Long roomSeq = payload == null ? null : longPayload(payload, "roomSeq");
+        if (roomSeq == null || roomSeq < 0) {
+            sendError(session, envelope.messageId(), envelope.roomId(), "INVALID_PAYLOAD", "roomSeq is required and must be non-negative");
+            return;
+        }
+        clientOffsetService.acknowledge(joined.roomId(), joined.userId(), joined.clientSessionId(), roomSeq);
+        String token = payload == null ? null : stringPayload(payload, "resumeToken");
+        if (token != null && !token.isBlank()) {
+            resumeTokenService.updateLastSeen(token, roomSeq);
+        }
+        send(session, new RoomWebSocketEnvelope("ROOM_EVENT_ACKED", envelope.messageId(), joined.roomId().toString(),
+                joined.connectionId(), Map.of("roomSeq", roomSeq)));
+    }
+
+    private void resumeRoom(WebSocketSession session, RoomWebSocketEnvelope envelope) throws IOException {
+        if (broadcaster.findByWebSocketSessionId(session.getId()) != null) {
+            sendError(session, envelope.messageId(), envelope.roomId(), "ALREADY_JOINED_ROOM", "Connection has already joined a room");
+            return;
+        }
+        UUID userId = parseHandshakeUser(session, envelope);
+        if (userId == null) {
+            return;
+        }
+        UUID roomId = parseRoomId(session, envelope);
+        if (roomId == null) {
+            return;
+        }
+        if (!userRepository.existsById(userId)) {
+            sendError(session, envelope.messageId(), envelope.roomId(), "INVALID_USER", "User does not exist");
+            return;
+        }
+        Map<String, Object> payload = payloadMap(envelope);
+        String token = payload == null ? null : stringPayload(payload, "resumeToken");
+        Long requestedLastSeen = payload == null ? null : longPayload(payload, "lastSeenRoomSeq");
+        String clientSessionId = stringAttribute(session, RoomWebSocketHandshakeInterceptor.SESSION_ID_ATTRIBUTE);
+        ResumeToken validated;
+        try {
+            validated = resumeTokenService.validate(token, roomId, userId, clientSessionId);
+        } catch (ForbiddenException exception) {
+            sendError(session, envelope.messageId(), envelope.roomId(), exception.code(), exception.getMessage());
+            return;
+        }
+
+        String connectionId = UUID.randomUUID().toString();
+        JoinedRoomConnection joined = new JoinedRoomConnection(
+                roomId,
+                userId,
+                connectionId,
+                session.getId(),
+                stringAttribute(session, RoomWebSocketHandshakeInterceptor.DEVICE_ID_ATTRIBUTE),
+                clientSessionId,
+                session);
+        connectionRegistryService.join(roomId, userId, connectionId, session.getId(), joined.deviceId(), joined.clientSessionId());
+        presenceService.join(roomId, userId, connectionId, session.getId(), joined.deviceId(), joined.clientSessionId());
+        broadcaster.register(joined);
+
+        DocumentLiveState state = documentStateService.getOrInitialize(roomId);
+        IssuedResumeToken replacement = resumeTokenService.issue(roomId, userId, connectionId, joined.clientSessionId(), validated.lastSeenRoomSeq());
+        send(session, new RoomWebSocketEnvelope("ROOM_RESUMED", envelope.messageId(), roomId.toString(), connectionId,
+                joinedPayload(replacement.token(), state)));
+
+        long lastSeenRoomSeq = requestedLastSeen == null
+                ? clientOffsetService.lastSeenOrDefault(roomId, userId, clientSessionId, validated.lastSeenRoomSeq())
+                : requestedLastSeen;
+        BackfillResult backfill = roomBackfillService.backfill(roomId, userId, clientSessionId, lastSeenRoomSeq);
+        if (backfill.resyncRequired()) {
+            send(session, new RoomWebSocketEnvelope("RESYNC_REQUIRED", envelope.messageId(), roomId.toString(), connectionId,
+                    Map.of("reason", backfill.reason(), "documentState", documentStatePayload(backfill.currentState()))));
+            return;
+        }
+        send(session, new RoomWebSocketEnvelope("ROOM_BACKFILL", envelope.messageId(), roomId.toString(), connectionId,
+                Map.of("fromRoomSeq", backfill.fromRoomSeq(), "toRoomSeq", backfill.toRoomSeq(), "events", backfill.events())));
+    }
+
     private UUID parseHandshakeUser(WebSocketSession session, RoomWebSocketEnvelope envelope) throws IOException {
         String rawUserId = stringAttribute(session, RoomWebSocketHandshakeInterceptor.USER_ID_ATTRIBUTE);
         if (rawUserId == null || rawUserId.isBlank()) {
@@ -437,6 +553,7 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
         payload.put("roomSeq", result.roomSeq());
         payload.put("revision", result.revision());
         payload.put("duplicate", result.duplicate());
+        payload.put("transformed", result.transformed());
         send(session, new RoomWebSocketEnvelope("OPERATION_ACK", envelope.messageId(), envelope.roomId(), connectionId, payload));
     }
 
@@ -459,6 +576,27 @@ public class RoomWebSocketHandler extends TextWebSocketHandler {
         payload.put("revision", result.revision());
         payload.put("operationType", result.operationType());
         payload.put("operation", result.operation());
+        payload.put("transformed", result.transformed());
+        return payload;
+    }
+
+    private Map<String, Object> joinedPayload(String resumeToken, DocumentLiveState state) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("resumeToken", resumeToken);
+        payload.put("currentRoomSeq", state.currentRoomSeq());
+        payload.put("currentRevision", state.currentRevision());
+        return payload;
+    }
+
+    private Map<String, Object> documentStatePayload(DocumentLiveState state) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("roomId", state.roomId().toString());
+        payload.put("documentId", state.documentId().toString());
+        payload.put("currentRoomSeq", state.currentRoomSeq());
+        payload.put("currentRevision", state.currentRevision());
+        payload.put("contentText", state.contentText());
+        payload.put("contentChecksum", state.contentChecksum());
+        payload.put("updatedAt", state.updatedAt());
         return payload;
     }
 

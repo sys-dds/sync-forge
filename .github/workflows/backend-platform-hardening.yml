@@ -1,11 +1,11 @@
-name: Backend Platform Hardening
+name: SyncForge Backend Hardening
 
 on:
   pull_request:
   workflow_dispatch:
 
 jobs:
-  backend-platform-hardening:
+  syncforge-backend-hardening:
     runs-on: ubuntu-latest
 
     steps:
@@ -19,12 +19,11 @@ jobs:
           java-version: '21'
           cache: maven
 
-      - name: Run targeted backend tests
+      - name: Run targeted SyncForge backend tests
         working-directory: apps/api
         run: |
-          # Exact targeted backend baseline from the hardening ticket.
           chmod +x ./mvnw
-          ./mvnw "-Dtest=WebhookCallbackValidationIntegrationTest,WebhookApiPathEndToEndIntegrationTest,WebhooksControllerIntegrationTest,WebhookDeliveryRelayIntegrationTest,WorkspacePlanControllerIntegrationTest,ProjectionJobWorkspaceVisibilityIntegrationTest,ProjectionJobsControllerIntegrationTest,WorkspaceQuotaEndToEndIntegrationTest" test
+          ./mvnw "-Dtest=FoundationIntegrationTest,DomainFoundationIntegrationTest,RoomPermissionIntegrationTest,WebSocketGatewayIntegrationTest,ConnectionRegistryIntegrationTest,CarryForwardHardeningIntegrationTest,PresenceIntegrationTest,AwarenessIntegrationTest,OperationProtocolIntegrationTest" test
 
       - name: Compile backend
         working-directory: apps/api
@@ -32,5 +31,5 @@ jobs:
           chmod +x ./mvnw
           ./mvnw -DskipTests compile
 
-      - name: Validate standalone platform compose
-        run: docker compose -f infra/docker-compose/docker-compose.platform.yml config
+      - name: Validate SyncForge compose
+        run: docker compose -f infra/docker-compose/docker-compose.yml config
