@@ -74,6 +74,8 @@ class RoomEventOutboxRepositoryIntegrationTest extends AbstractIntegrationTest {
                 revision,
                 "TEXT_INSERT",
                 payload,
+                "local-node-1",
+                1L,
                 OffsetDateTime.now());
     }
 }

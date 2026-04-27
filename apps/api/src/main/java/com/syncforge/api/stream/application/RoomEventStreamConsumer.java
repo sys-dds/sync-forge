@@ -9,6 +9,9 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.syncforge.api.node.NodeIdentity;
+import com.syncforge.api.operation.store.OperationRepository;
+import com.syncforge.api.ownership.RoomOwnershipLease;
+import com.syncforge.api.ownership.RoomOwnershipService;
 import com.syncforge.api.stream.model.NodeRoomSubscription;
 import com.syncforge.api.stream.model.RoomStreamOffset;
 import com.syncforge.api.stream.store.RoomStreamOffsetRepository;
@@ -32,6 +35,8 @@ public class RoomEventStreamConsumer {
     private final NodeRoomSubscriptionService subscriptionService;
     private final RoomWebSocketBroadcaster broadcaster;
     private final NodeIdentity nodeIdentity;
+    private final RoomOwnershipService ownershipService;
+    private final OperationRepository operationRepository;
 
     public RoomEventStreamConsumer(
             StringRedisTemplate redisTemplate,
@@ -41,7 +46,9 @@ public class RoomEventStreamConsumer {
             RoomStreamOffsetRepository offsetRepository,
             NodeRoomSubscriptionService subscriptionService,
             RoomWebSocketBroadcaster broadcaster,
-            NodeIdentity nodeIdentity) {
+            NodeIdentity nodeIdentity,
+            RoomOwnershipService ownershipService,
+            OperationRepository operationRepository) {
         this.redisTemplate = redisTemplate;
         this.objectMapper = objectMapper;
         this.properties = properties;
@@ -50,6 +57,8 @@ public class RoomEventStreamConsumer {
         this.subscriptionService = subscriptionService;
         this.broadcaster = broadcaster;
         this.nodeIdentity = nodeIdentity;
+        this.ownershipService = ownershipService;
+        this.operationRepository = operationRepository;
     }
 
     public int pollSubscribedRooms() {
@@ -90,6 +99,10 @@ public class RoomEventStreamConsumer {
                         "Expected roomSeq " + (lastRoomSeq + 1) + " but observed " + roomSeq);
                 break;
             }
+            if (staleUnsafeEvent(roomId, roomSeq, value)) {
+                subscriptionService.markEvent(roomId);
+                continue;
+            }
             broadcaster.broadcast(roomId, toEnvelope(value));
             String recordId = record.getId().getValue();
             offsetRepository.update(roomId, nodeIdentity.nodeId(), streamKey, recordId, roomSeq);
@@ -98,6 +111,21 @@ public class RoomEventStreamConsumer {
             delivered++;
         }
         return delivered;
+    }
+
+    private boolean staleUnsafeEvent(UUID roomId, long roomSeq, Map<Object, Object> value) {
+        String token = optionalField(value, "fencingToken");
+        if (token == null || token.isBlank()) {
+            return false;
+        }
+        RoomOwnershipLease current = ownershipService.currentOwnership(roomId);
+        if (current == null || Long.parseLong(token) >= current.fencingToken()) {
+            return false;
+        }
+        String operationId = optionalField(value, "operationId");
+        return operationRepository.findByRoomSeq(roomId, roomSeq)
+                .filter(record -> record.operationId().equals(operationId))
+                .isEmpty();
     }
 
     private RoomWebSocketEnvelope toEnvelope(Map<Object, Object> value) {
@@ -113,6 +141,11 @@ public class RoomEventStreamConsumer {
         payload.put("operation", operation(field(value, "operation")));
         payload.put("transformed", Boolean.parseBoolean(field(value, "transformed")));
         payload.put("producedByNodeId", field(value, "producedByNodeId"));
+        payload.put("ownerNodeId", optionalField(value, "ownerNodeId"));
+        String fencingToken = optionalField(value, "fencingToken");
+        if (fencingToken != null && !fencingToken.isBlank()) {
+            payload.put("fencingToken", Long.parseLong(fencingToken));
+        }
         return new RoomWebSocketEnvelope("OPERATION_APPLIED", null, roomId.toString(), null, payload);
     }
 
@@ -130,5 +163,10 @@ public class RoomEventStreamConsumer {
             throw new StreamPublishException("Redis Stream event is missing field " + name, null);
         }
         return field.toString();
+    }
+
+    private String optionalField(Map<Object, Object> value, String name) {
+        Object field = value.get(name);
+        return field == null ? null : field.toString();
     }
 }

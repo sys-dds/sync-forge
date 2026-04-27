@@ -27,7 +27,9 @@ public class RoomEventOutboxService {
                 operation.resultingRevision(),
                 operation.operationId(),
                 logicalEventKey,
-                payloadFactory.operationApplied(operation, transformed));
+                payloadFactory.operationApplied(operation, transformed),
+                operation.ownerNodeId(),
+                operation.fencingToken());
     }
 
     public Optional<RoomEventOutboxRecord> findByRoomSeq(UUID roomId, long roomSeq) {

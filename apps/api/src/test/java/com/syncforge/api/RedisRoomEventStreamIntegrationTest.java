@@ -165,6 +165,8 @@ class RedisRoomEventStreamIntegrationTest extends AbstractIntegrationTest {
                 1,
                 "TEXT_INSERT",
                 Map.of("position", 0, "text", "x"),
+                nodeIdentity.nodeId(),
+                1L,
                 OffsetDateTime.now());
     }
 

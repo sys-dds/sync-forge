@@ -5,9 +5,12 @@ import java.time.OffsetDateTime;
 import java.util.List;
 
 import com.syncforge.api.node.NodeIdentity;
+import com.syncforge.api.ownership.RoomOwnershipLease;
+import com.syncforge.api.ownership.RoomOwnershipService;
 import com.syncforge.api.stream.application.RoomEventStreamProperties;
 import com.syncforge.api.stream.application.RoomEventStreamPublisher;
 import com.syncforge.api.stream.application.StreamPublishException;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -17,19 +20,32 @@ public class RoomEventOutboxDispatcher {
     private final RoomEventStreamPublisher streamPublisher;
     private final RoomEventStreamProperties streamProperties;
     private final NodeIdentity nodeIdentity;
+    private final RoomOwnershipService ownershipService;
     private final Duration lockTtl;
+
+    @Autowired
+    public RoomEventOutboxDispatcher(
+            RoomEventOutboxRepository outboxRepository,
+            RoomEventStreamPublisher streamPublisher,
+            RoomEventStreamProperties streamProperties,
+            NodeIdentity nodeIdentity,
+            RoomOwnershipService ownershipService,
+            @Value("${syncforge.delivery.outbox.lock-ttl-ms:30000}") long lockTtlMs) {
+        this.outboxRepository = outboxRepository;
+        this.streamPublisher = streamPublisher;
+        this.streamProperties = streamProperties;
+        this.nodeIdentity = nodeIdentity;
+        this.ownershipService = ownershipService;
+        this.lockTtl = Duration.ofMillis(lockTtlMs);
+    }
 
     public RoomEventOutboxDispatcher(
             RoomEventOutboxRepository outboxRepository,
             RoomEventStreamPublisher streamPublisher,
             RoomEventStreamProperties streamProperties,
             NodeIdentity nodeIdentity,
-            @Value("${syncforge.delivery.outbox.lock-ttl-ms:30000}") long lockTtlMs) {
-        this.outboxRepository = outboxRepository;
-        this.streamPublisher = streamPublisher;
-        this.streamProperties = streamProperties;
-        this.nodeIdentity = nodeIdentity;
-        this.lockTtl = Duration.ofMillis(lockTtlMs);
+            long lockTtlMs) {
+        this(outboxRepository, streamPublisher, streamProperties, nodeIdentity, null, lockTtlMs);
     }
 
     public int dispatchOnce(int limit) {
@@ -49,6 +65,16 @@ public class RoomEventOutboxDispatcher {
 
     private boolean publishOne(RoomEventOutboxRecord record) {
         try {
+            RoomOwnershipLease lease = ownershipService == null ? null : ownershipService.currentOwnership(record.roomId());
+            if (ownershipService != null && lease == null) {
+                lease = ownershipService.acquireOrRenew(record.roomId(), nodeIdentity.nodeId());
+            }
+            if (ownershipService != null && !nodeIdentity.nodeId().equals(lease.ownerNodeId())) {
+                ownershipService.recordFencedPublishRejected(record.roomId(), nodeIdentity.nodeId(), record.fencingToken());
+                outboxRepository.markRetry(record.id(), "FENCING_TOKEN_REJECTED",
+                        OffsetDateTime.now().plusSeconds(backoffSeconds(record.attemptCount() + 1)));
+                return false;
+            }
             PublishedRoomEvent published = streamPublisher.publishOutboxEvent(record)
                     .orElseThrow(() -> new StreamPublishException("Redis Streams are disabled for outbox dispatch", null));
             outboxRepository.markPublished(record.id(), published.streamKey(), published.streamId());

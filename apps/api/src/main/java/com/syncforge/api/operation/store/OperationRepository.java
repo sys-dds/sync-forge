@@ -42,22 +42,42 @@ public class OperationRepository {
             long resultingRevision,
             String operationType,
             Map<String, Object> operation) {
+        return insert(roomId, userId, connectionId, operationId, clientSessionId, clientSeq, baseRevision,
+                roomSeq, resultingRevision, operationType, operation, null, null);
+    }
+
+    public OperationRecord insert(
+            UUID roomId,
+            UUID userId,
+            String connectionId,
+            String operationId,
+            String clientSessionId,
+            long clientSeq,
+            long baseRevision,
+            long roomSeq,
+            long resultingRevision,
+            String operationType,
+            Map<String, Object> operation,
+            String ownerNodeId,
+            Long fencingToken) {
         return jdbcTemplate.queryForObject("""
                 insert into room_operations (
                     id, room_id, user_id, connection_id, operation_id, client_session_id, client_seq,
-                    base_revision, room_seq, resulting_revision, operation_type, operation_json
+                    base_revision, room_seq, resulting_revision, operation_type, operation_json,
+                    owner_node_id, fencing_token
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, cast(? as jsonb))
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, cast(? as jsonb), ?, ?)
                 returning id, room_id, user_id, connection_id, operation_id, client_session_id, client_seq,
-                          base_revision, room_seq, resulting_revision, operation_type, operation_json, created_at
+                          base_revision, room_seq, resulting_revision, operation_type, operation_json, owner_node_id, fencing_token, created_at
                 """, rowMapper, UUID.randomUUID(), roomId, userId, connectionId, operationId, clientSessionId,
-                clientSeq, baseRevision, roomSeq, resultingRevision, operationType, writeJson(operation));
+                clientSeq, baseRevision, roomSeq, resultingRevision, operationType, writeJson(operation),
+                ownerNodeId, fencingToken);
     }
 
     public Optional<OperationRecord> findByRoomAndOperationId(UUID roomId, String operationId) {
         List<OperationRecord> records = jdbcTemplate.query("""
                 select id, room_id, user_id, connection_id, operation_id, client_session_id, client_seq,
-                       base_revision, room_seq, resulting_revision, operation_type, operation_json, created_at
+                       base_revision, room_seq, resulting_revision, operation_type, operation_json, owner_node_id, fencing_token, created_at
                 from room_operations
                 where room_id = ? and operation_id = ?
                 """, rowMapper, roomId, operationId);
@@ -67,7 +87,7 @@ public class OperationRepository {
     public Optional<OperationRecord> findByRoomSeq(UUID roomId, long roomSeq) {
         List<OperationRecord> records = jdbcTemplate.query("""
                 select id, room_id, user_id, connection_id, operation_id, client_session_id, client_seq,
-                       base_revision, room_seq, resulting_revision, operation_type, operation_json, created_at
+                       base_revision, room_seq, resulting_revision, operation_type, operation_json, owner_node_id, fencing_token, created_at
                 from room_operations
                 where room_id = ? and room_seq = ?
                 """, rowMapper, roomId, roomSeq);
@@ -86,7 +106,7 @@ public class OperationRepository {
     public List<OperationRecord> findByRoom(UUID roomId) {
         return jdbcTemplate.query("""
                 select id, room_id, user_id, connection_id, operation_id, client_session_id, client_seq,
-                       base_revision, room_seq, resulting_revision, operation_type, operation_json, created_at
+                       base_revision, room_seq, resulting_revision, operation_type, operation_json, owner_node_id, fencing_token, created_at
                 from room_operations
                 where room_id = ?
                 order by room_seq asc
@@ -96,7 +116,7 @@ public class OperationRepository {
     public List<OperationRecord> findByRoomAfterRevision(UUID roomId, long baseRevision) {
         return jdbcTemplate.query("""
                 select id, room_id, user_id, connection_id, operation_id, client_session_id, client_seq,
-                       base_revision, room_seq, resulting_revision, operation_type, operation_json, created_at
+                       base_revision, room_seq, resulting_revision, operation_type, operation_json, owner_node_id, fencing_token, created_at
                 from room_operations
                 where room_id = ? and resulting_revision > ?
                 order by room_seq asc
@@ -106,7 +126,7 @@ public class OperationRepository {
     public List<OperationRecord> findByRoomAfterRoomSeq(UUID roomId, long roomSeq) {
         return jdbcTemplate.query("""
                 select id, room_id, user_id, connection_id, operation_id, client_session_id, client_seq,
-                       base_revision, room_seq, resulting_revision, operation_type, operation_json, created_at
+                       base_revision, room_seq, resulting_revision, operation_type, operation_json, owner_node_id, fencing_token, created_at
                 from room_operations
                 where room_id = ? and room_seq > ?
                 order by room_seq asc
@@ -116,7 +136,7 @@ public class OperationRepository {
     public List<OperationRecord> findActiveByRoomAfterRoomSeq(UUID roomId, long roomSeq) {
         return jdbcTemplate.query("""
                 select id, room_id, user_id, connection_id, operation_id, client_session_id, client_seq,
-                       base_revision, room_seq, resulting_revision, operation_type, operation_json, created_at
+                       base_revision, room_seq, resulting_revision, operation_type, operation_json, owner_node_id, fencing_token, created_at
                 from room_operations
                 where room_id = ? and room_seq > ? and compacted = false
                 order by room_seq asc
@@ -218,6 +238,8 @@ public class OperationRepository {
                 rs.getLong("resulting_revision"),
                 rs.getString("operation_type"),
                 readMap(rs.getString("operation_json")),
+                rs.getString("owner_node_id"),
+                rs.getObject("fencing_token", Long.class),
                 rs.getObject("created_at", OffsetDateTime.class));
     }
 

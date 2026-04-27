@@ -25,6 +25,8 @@ public record RoomEventOutboxRecord(
         OffsetDateTime createdAt,
         OffsetDateTime updatedAt,
         OffsetDateTime publishedAt,
-        OffsetDateTime parkedAt
+        OffsetDateTime parkedAt,
+        String ownerNodeId,
+        Long fencingToken
 ) {
 }

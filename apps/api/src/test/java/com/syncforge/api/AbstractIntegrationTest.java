@@ -76,6 +76,8 @@ public abstract class AbstractIntegrationTest {
                     document_snapshot_text_atoms,
                     document_snapshots,
                     room_operation_compaction_runs,
+                    room_ownership_events,
+                    room_ownership_leases,
                     room_conflict_resolution_traces,
                     document_state_rebuild_runs,
                     document_live_states,

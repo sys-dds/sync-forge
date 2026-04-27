@@ -8,6 +8,7 @@ import com.syncforge.api.conflict.application.ConflictDetectionService;
 import com.syncforge.api.conflict.model.ConflictResolutionResult;
 import com.syncforge.api.documentstate.application.DocumentStateService;
 import com.syncforge.api.delivery.RoomEventOutboxService;
+import com.syncforge.api.node.NodeIdentity;
 import com.syncforge.api.operation.model.OfflineOperationSubmission;
 import com.syncforge.api.operation.model.OfflineOperationSubmissionStatus;
 import com.syncforge.api.operation.model.OperationRecord;
@@ -18,6 +19,9 @@ import com.syncforge.api.operation.store.OfflineOperationSubmissionRepository;
 import com.syncforge.api.operation.store.OperationAttemptRepository;
 import com.syncforge.api.operation.store.OperationRepository;
 import com.syncforge.api.operation.store.RoomSequenceRepository;
+import com.syncforge.api.ownership.RoomOwnershipDecision;
+import com.syncforge.api.ownership.RoomOwnershipLease;
+import com.syncforge.api.ownership.RoomOwnershipService;
 import com.syncforge.api.room.application.RoomPermissionService;
 import com.syncforge.api.shared.BadRequestException;
 import org.springframework.stereotype.Service;
@@ -37,6 +41,8 @@ public class OperationService {
     private final RoomEventOutboxService outboxService;
     private final OfflineOperationSubmissionRepository offlineSubmissionRepository;
     private final CanonicalOperationPayloadHasher payloadHasher;
+    private final RoomOwnershipService ownershipService;
+    private final NodeIdentity nodeIdentity;
 
     public OperationService(
             OperationRepository operationRepository,
@@ -47,7 +53,9 @@ public class OperationService {
             ConflictDetectionService conflictDetectionService,
             RoomEventOutboxService outboxService,
             OfflineOperationSubmissionRepository offlineSubmissionRepository,
-            CanonicalOperationPayloadHasher payloadHasher) {
+            CanonicalOperationPayloadHasher payloadHasher,
+            RoomOwnershipService ownershipService,
+            NodeIdentity nodeIdentity) {
         this.operationRepository = operationRepository;
         this.attemptRepository = attemptRepository;
         this.sequenceRepository = sequenceRepository;
@@ -57,6 +65,8 @@ public class OperationService {
         this.outboxService = outboxService;
         this.offlineSubmissionRepository = offlineSubmissionRepository;
         this.payloadHasher = payloadHasher;
+        this.ownershipService = ownershipService;
+        this.nodeIdentity = nodeIdentity;
     }
 
     @Transactional
@@ -100,6 +110,14 @@ public class OperationService {
             recordOfflineRejected(command, "DUPLICATE_OPERATION_CONFLICT", "operationId already exists with different payload");
             return OperationSubmitResult.nack(command.operationId(), command.clientSeq(), "DUPLICATE_OPERATION_CONFLICT",
                     "operationId already exists with different payload", null);
+        }
+
+        RoomOwnershipLease ownership = ownershipForAppend(command);
+        if (ownership == null) {
+            recordRejected(command, "FENCING_TOKEN_REJECTED", "Room owner fencing token is not current", null);
+            recordOfflineRejected(command, "FENCING_TOKEN_REJECTED", "Room owner fencing token is not current");
+            return OperationSubmitResult.nack(command.operationId(), command.clientSeq(), "FENCING_TOKEN_REJECTED",
+                    "Room owner fencing token is not current", null);
         }
 
         RoomSequence sequence = sequenceRepository.lockForUpdate(command.roomId());
@@ -152,7 +170,7 @@ public class OperationService {
         long nextRevision = sequence.currentRevision() + 1;
         OperationRecord inserted = operationRepository.insert(command.roomId(), command.userId(), command.connectionId(),
                 command.operationId(), command.clientSessionId(), command.clientSeq(), effectiveBaseRevision,
-                nextRoomSeq, nextRevision, operationType, operation);
+                nextRoomSeq, nextRevision, operationType, operation, ownership.ownerNodeId(), ownership.fencingToken());
         sequenceRepository.advance(command.roomId(), nextRoomSeq, nextRevision);
         documentStateService.applyAcceptedOperation(inserted);
         attemptRepository.record(command.roomId(), command.userId(), command.connectionId(), command.operationId(),
@@ -162,6 +180,19 @@ public class OperationService {
         recordOfflineAccepted(command, inserted);
         return OperationSubmitResult.ack(inserted.operationId(), inserted.clientSeq(), inserted.roomSeq(), inserted.resultingRevision(),
                 false, inserted.operationType(), inserted.operation(), transformed);
+    }
+
+    private RoomOwnershipLease ownershipForAppend(SubmitOperationCommand command) {
+        if (command.ownerNodeId() != null && command.fencingToken() != null) {
+            RoomOwnershipDecision decision = ownershipService.ensureCurrentOwner(
+                    command.roomId(), command.ownerNodeId(), command.fencingToken());
+            if (!decision.accepted()) {
+                ownershipService.recordFencedWriteRejected(command.roomId(), command.ownerNodeId(), command.fencingToken());
+                return null;
+            }
+            return decision.lease();
+        }
+        return ownershipService.acquireOrRenew(command.roomId(), nodeIdentity.nodeId());
     }
 
     private OperationSubmitResult validate(SubmitOperationCommand command) {
