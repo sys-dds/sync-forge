@@ -13,6 +13,7 @@ public record ResumeDecision(
         long minimumResumableRoomSeq,
         long snapshotRoomSeq,
         long latestRoomSeq,
+        int returnedOperationCount,
         String reason,
         List<Map<String, Object>> operations
 ) {
