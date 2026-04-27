@@ -8,7 +8,10 @@ public record SnapshotRefresh(
         long minimumResumableRoomSeq,
         long snapshotRoomSeq,
         long latestRoomSeq,
+        long baselineRoomSeq,
         String visibleText,
-        String contentChecksum
+        String contentChecksum,
+        String refreshReason,
+        long nextResumeFromRoomSeq
 ) {
 }

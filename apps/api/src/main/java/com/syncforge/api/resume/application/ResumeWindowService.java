@@ -66,6 +66,7 @@ public class ResumeWindowService {
                     window.minimumResumableRoomSeq(),
                     window.snapshotRoomSeq(),
                     window.latestRoomSeq(),
+                    0,
                     BEHIND_MINIMUM,
                     List.of());
         }
@@ -80,6 +81,7 @@ public class ResumeWindowService {
                 window.minimumResumableRoomSeq(),
                 window.snapshotRoomSeq(),
                 window.latestRoomSeq(),
+                tail.size(),
                 null,
                 tail.stream().map(this::eventPayload).toList());
     }
@@ -96,8 +98,11 @@ public class ResumeWindowService {
                 snapshotRoomSeq,
                 snapshotRoomSeq,
                 state.currentRoomSeq(),
+                state.currentRoomSeq(),
                 state.contentText(),
-                state.contentChecksum());
+                state.contentChecksum(),
+                snapshot == null ? "NO_SNAPSHOT_AVAILABLE_LIVE_BASELINE_RETURNED" : "LATEST_SAFE_BASELINE",
+                state.currentRoomSeq());
     }
 
     private Map<String, Object> eventPayload(OperationRecord operation) {

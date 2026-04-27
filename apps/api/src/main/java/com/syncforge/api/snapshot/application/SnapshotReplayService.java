@@ -45,7 +45,7 @@ public class SnapshotReplayService {
         if (!expectedSnapshotChecksum.equals(snapshot.contentChecksum())) {
             throw new BadRequestException("SNAPSHOT_CHECKSUM_MISMATCH", "Snapshot checksum does not match snapshot content");
         }
-        List<OperationRecord> operations = operationRepository.findByRoomAfterRoomSeq(roomId, snapshot.roomSeq());
+        List<OperationRecord> operations = operationRepository.findActiveByRoomAfterRoomSeq(roomId, snapshot.roomSeq());
         List<TextAtom> snapshotAtoms = textConvergenceRepository.listSnapshotAtoms(snapshot.id());
         UUID snapshotLastOperationId = operationRepository.findByRoomSeq(roomId, snapshot.roomSeq())
                 .map(OperationRecord::id)
@@ -74,8 +74,9 @@ public class SnapshotReplayService {
                     OffsetDateTime.now());
             documentStateRepository.completeRebuild(rebuildId, replay.operationsReplayed(), rebuilt);
             boolean equivalent = documentStateService.verifyFullReplayEquivalence(roomId);
-            return new SnapshotReplayResponse(roomId, snapshot.id(), replay.operationsReplayed(),
-                    rebuilt.currentRoomSeq(), rebuilt.currentRevision(), rebuilt.contentChecksum(), true, equivalent);
+            return new SnapshotReplayResponse(roomId, snapshot.id(), snapshot.roomSeq(), replay.operationsReplayed(),
+                    replay.operationsReplayed(), rebuilt.currentRoomSeq(), rebuilt.currentRoomSeq(),
+                    rebuilt.currentRevision(), rebuilt.contentChecksum(), true, equivalent);
         } catch (RuntimeException exception) {
             documentStateRepository.failRebuild(rebuildId, exception.getMessage());
             documentStateRepository.recordFailedRebuild(roomId, snapshot.documentId(), snapshot.id(), exception.getMessage());

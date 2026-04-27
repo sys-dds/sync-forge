@@ -144,6 +144,15 @@ public class OperationRepository {
         return count == null ? 0 : count;
     }
 
+    public long countActiveThroughRoomSeq(UUID roomId, long roomSeq) {
+        Long count = jdbcTemplate.queryForObject("""
+                select count(*)
+                from room_operations
+                where room_id = ? and room_seq <= ? and compacted = false
+                """, Long.class, roomId, roomSeq);
+        return count == null ? 0 : count;
+    }
+
     public long countCompactedThroughRoomSeq(UUID roomId, long roomSeq) {
         Long count = jdbcTemplate.queryForObject("""
                 select count(*)
@@ -168,6 +177,17 @@ public class OperationRepository {
                 values (?, ?, ?, ?, ?, ?, 'COMPLETED')
                 """, id, roomId, minimumResumableRoomSeq, snapshotRoomSeq, compactedCount, activeTailCount);
         return id;
+    }
+
+    public Optional<CompactionRunRecord> findLatestCompactionRun(UUID roomId) {
+        return jdbcTemplate.query("""
+                select id, room_id, minimum_resumable_room_seq, snapshot_room_seq,
+                       compacted_count, active_tail_count, status, created_at
+                from room_operation_compaction_runs
+                where room_id = ?
+                order by created_at desc, id desc
+                limit 1
+                """, this::mapCompactionRun, roomId).stream().findFirst();
     }
 
     public long maxRoomSeq(UUID roomId) {
@@ -201,6 +221,18 @@ public class OperationRepository {
                 rs.getObject("created_at", OffsetDateTime.class));
     }
 
+    private CompactionRunRecord mapCompactionRun(ResultSet rs, int rowNum) throws SQLException {
+        return new CompactionRunRecord(
+                rs.getObject("id", UUID.class),
+                rs.getObject("room_id", UUID.class),
+                rs.getLong("minimum_resumable_room_seq"),
+                rs.getLong("snapshot_room_seq"),
+                rs.getInt("compacted_count"),
+                rs.getInt("active_tail_count"),
+                rs.getString("status"),
+                rs.getObject("created_at", OffsetDateTime.class));
+    }
+
     private Map<String, Object> readMap(String json) {
         try {
             return objectMapper.readValue(json, MAP_TYPE);
@@ -215,5 +247,17 @@ public class OperationRepository {
         } catch (JsonProcessingException exception) {
             throw new IllegalStateException("Unable to serialize operation JSON", exception);
         }
+    }
+
+    public record CompactionRunRecord(
+            UUID id,
+            UUID roomId,
+            long minimumResumableRoomSeq,
+            long snapshotRoomSeq,
+            int compactedCount,
+            int activeTailCount,
+            String status,
+            OffsetDateTime createdAt
+    ) {
     }
 }
