@@ -113,6 +113,63 @@ public class OperationRepository {
                 """, rowMapper, roomId, roomSeq);
     }
 
+    public List<OperationRecord> findActiveByRoomAfterRoomSeq(UUID roomId, long roomSeq) {
+        return jdbcTemplate.query("""
+                select id, room_id, user_id, connection_id, operation_id, client_session_id, client_seq,
+                       base_revision, room_seq, resulting_revision, operation_type, operation_json, created_at
+                from room_operations
+                where room_id = ? and room_seq > ? and compacted = false
+                order by room_seq asc
+                """, rowMapper, roomId, roomSeq);
+    }
+
+    public int markCompactedThroughRoomSeq(UUID roomId, long roomSeq, UUID compactionRunId) {
+        return jdbcTemplate.update("""
+                update room_operations
+                set compacted = true,
+                    compacted_at = ?,
+                    compaction_run_id = ?
+                where room_id = ?
+                  and room_seq <= ?
+                  and compacted = false
+                """, OffsetDateTime.now(), compactionRunId, roomId, roomSeq);
+    }
+
+    public long countActiveAfterRoomSeq(UUID roomId, long roomSeq) {
+        Long count = jdbcTemplate.queryForObject("""
+                select count(*)
+                from room_operations
+                where room_id = ? and room_seq > ? and compacted = false
+                """, Long.class, roomId, roomSeq);
+        return count == null ? 0 : count;
+    }
+
+    public long countCompactedThroughRoomSeq(UUID roomId, long roomSeq) {
+        Long count = jdbcTemplate.queryForObject("""
+                select count(*)
+                from room_operations
+                where room_id = ? and room_seq <= ? and compacted = true
+                """, Long.class, roomId, roomSeq);
+        return count == null ? 0 : count;
+    }
+
+    public UUID recordCompactionRun(
+            UUID id,
+            UUID roomId,
+            long minimumResumableRoomSeq,
+            long snapshotRoomSeq,
+            int compactedCount,
+            int activeTailCount) {
+        jdbcTemplate.update("""
+                insert into room_operation_compaction_runs (
+                    id, room_id, minimum_resumable_room_seq, snapshot_room_seq,
+                    compacted_count, active_tail_count, status
+                )
+                values (?, ?, ?, ?, ?, ?, 'COMPLETED')
+                """, id, roomId, minimumResumableRoomSeq, snapshotRoomSeq, compactedCount, activeTailCount);
+        return id;
+    }
+
     public long maxRoomSeq(UUID roomId) {
         Long maxRoomSeq = jdbcTemplate.queryForObject("""
                 select coalesce(max(room_seq), 0)

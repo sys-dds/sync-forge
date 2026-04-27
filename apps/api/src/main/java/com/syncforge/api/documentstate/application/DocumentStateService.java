@@ -16,6 +16,7 @@ import com.syncforge.api.operation.store.OperationRepository;
 import com.syncforge.api.room.model.Room;
 import com.syncforge.api.room.store.RoomRepository;
 import com.syncforge.api.text.application.TextConvergenceService;
+import com.syncforge.api.text.model.TextAtom;
 import com.syncforge.api.shared.NotFoundException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -118,11 +119,6 @@ public class DocumentStateService {
 
     public ReplayResult replayOperations(List<OperationRecord> operations, String initialContent) {
         if (operations.stream().anyMatch(operation -> textConvergenceService.supports(operation.operationType()))) {
-            if (initialContent != null && !initialContent.isEmpty() && !operations.isEmpty()) {
-                OperationRecord last = operations.get(operations.size() - 1);
-                String content = textConvergenceService.materializeVisibleText(last.roomId());
-                return new ReplayResult(content, last.roomSeq(), last.resultingRevision(), last.id(), operations.size());
-            }
             var replay = textConvergenceService.replay(operations);
             return new ReplayResult(
                     replay.content(),
@@ -145,6 +141,26 @@ public class DocumentStateService {
             operationsReplayed++;
         }
         return new ReplayResult(content, roomSeq, revision, lastOperationId, operationsReplayed);
+    }
+
+    public ReplayResult replayTextFromSnapshotAtoms(
+            List<TextAtom> snapshotAtoms,
+            long snapshotRoomSeq,
+            long snapshotRevision,
+            UUID snapshotLastOperationId,
+            List<OperationRecord> tailOperations) {
+        var replay = textConvergenceService.replayFromSnapshotAtoms(
+                snapshotAtoms,
+                snapshotRoomSeq,
+                snapshotRevision,
+                snapshotLastOperationId,
+                tailOperations);
+        return new ReplayResult(
+                replay.content(),
+                replay.roomSeq(),
+                replay.revision(),
+                replay.lastOperationId(),
+                replay.operationsReplayed());
     }
 
     public String checksum(String content) {

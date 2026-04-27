@@ -78,6 +78,40 @@ public class TextConvergenceService {
 
     public ReplayProjection replay(List<OperationRecord> operations) {
         Map<String, ReplayAtom> atoms = new LinkedHashMap<>();
+        return replayFromAtomMap(atoms, operations);
+    }
+
+    public ReplayProjection replayFromSnapshotAtoms(
+            List<TextAtom> snapshotAtoms,
+            long snapshotRoomSeq,
+            long snapshotRevision,
+            UUID snapshotLastOperationId,
+            List<OperationRecord> tailOperations) {
+        Map<String, ReplayAtom> atoms = new LinkedHashMap<>();
+        for (TextAtom atom : snapshotAtoms) {
+            atoms.put(atom.atomId(), new ReplayAtom(
+                    atom.atomId(),
+                    atom.operationId(),
+                    atom.roomSeq(),
+                    atom.revision(),
+                    atom.spanIndex(),
+                    atom.anchorAtomId(),
+                    atom.content(),
+                    atom.tombstoned()));
+        }
+        ReplayProjection replay = replayFromAtomMap(atoms, tailOperations);
+        if (!tailOperations.isEmpty()) {
+            return replay;
+        }
+        return new ReplayProjection(
+                replay.content(),
+                snapshotRoomSeq,
+                snapshotRevision,
+                snapshotLastOperationId,
+                0);
+    }
+
+    private ReplayProjection replayFromAtomMap(Map<String, ReplayAtom> atoms, List<OperationRecord> operations) {
         for (OperationRecord operation : operations) {
             CollaborativeTextOperation textOperation = parseAndValidate(operation.operationType(), operation.operation());
             if ("TEXT_INSERT_AFTER".equals(operation.operationType())) {

@@ -75,6 +75,47 @@ public class TextConvergenceRepository {
                 """, rowMapper, roomId);
     }
 
+    public void replaceSnapshotAtoms(UUID snapshotId, UUID roomId) {
+        jdbcTemplate.update("delete from document_snapshot_text_atoms where snapshot_id = ?", snapshotId);
+        List<TextAtom> atoms = listRoomAtoms(roomId);
+        for (TextAtom atom : atoms) {
+            jdbcTemplate.update("""
+                    insert into document_snapshot_text_atoms (
+                        snapshot_id, room_id, atom_id, operation_id, room_seq, revision, span_index,
+                        anchor_atom_id, content, ordering_key, tombstoned, deleted_by_operation_id,
+                        deleted_at_room_seq, created_at, updated_at
+                    )
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    snapshotId,
+                    atom.roomId(),
+                    atom.atomId(),
+                    atom.operationId(),
+                    atom.roomSeq(),
+                    atom.revision(),
+                    atom.spanIndex(),
+                    atom.anchorAtomId(),
+                    atom.content(),
+                    atom.orderingKey(),
+                    atom.tombstoned(),
+                    atom.deletedByOperationId(),
+                    atom.deletedAtRoomSeq(),
+                    atom.createdAt(),
+                    atom.updatedAt());
+        }
+    }
+
+    public List<TextAtom> listSnapshotAtoms(UUID snapshotId) {
+        return jdbcTemplate.query("""
+                select room_id, atom_id, operation_id, room_seq, revision, span_index, anchor_atom_id,
+                       content, ordering_key, tombstoned, deleted_by_operation_id, deleted_at_room_seq,
+                       created_at, updated_at
+                from document_snapshot_text_atoms
+                where snapshot_id = ?
+                order by ordering_key, room_seq, atom_id
+                """, rowMapper, snapshotId);
+    }
+
     public int markTombstoned(UUID roomId, List<String> atomIds, String operationId, long roomSeq) {
         if (atomIds.isEmpty()) {
             return 0;

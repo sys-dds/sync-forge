@@ -12,6 +12,7 @@ import com.syncforge.api.operation.store.OperationRepository;
 import com.syncforge.api.resume.model.BackfillResult;
 import com.syncforge.api.resume.store.RoomBackfillRepository;
 import com.syncforge.api.room.application.RoomPermissionService;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -21,24 +22,45 @@ public class RoomBackfillService {
     private final RoomBackfillRepository roomBackfillRepository;
     private final DocumentStateService documentStateService;
     private final RoomPermissionService permissionService;
+    private final ResumeWindowService resumeWindowService;
     private final long maxBackfillEvents;
+
+    @Autowired
+    public RoomBackfillService(
+            OperationRepository operationRepository,
+            RoomBackfillRepository roomBackfillRepository,
+            DocumentStateService documentStateService,
+            RoomPermissionService permissionService,
+            ResumeWindowService resumeWindowService,
+            @Value("${syncforge.resume.max-backfill-events:100}") long maxBackfillEvents) {
+        this.operationRepository = operationRepository;
+        this.roomBackfillRepository = roomBackfillRepository;
+        this.documentStateService = documentStateService;
+        this.permissionService = permissionService;
+        this.resumeWindowService = resumeWindowService;
+        this.maxBackfillEvents = maxBackfillEvents;
+    }
 
     public RoomBackfillService(
             OperationRepository operationRepository,
             RoomBackfillRepository roomBackfillRepository,
             DocumentStateService documentStateService,
             RoomPermissionService permissionService,
-            @Value("${syncforge.resume.max-backfill-events:100}") long maxBackfillEvents) {
-        this.operationRepository = operationRepository;
-        this.roomBackfillRepository = roomBackfillRepository;
-        this.documentStateService = documentStateService;
-        this.permissionService = permissionService;
-        this.maxBackfillEvents = maxBackfillEvents;
+            long maxBackfillEvents) {
+        this(operationRepository, roomBackfillRepository, documentStateService, permissionService, null, maxBackfillEvents);
     }
 
     public BackfillResult backfill(UUID roomId, UUID userId, String clientSessionId, long lastSeenRoomSeq) {
         permissionService.requireView(roomId, userId);
-        List<OperationRecord> operations = operationRepository.findByRoomAfterRoomSeq(roomId, lastSeenRoomSeq);
+        long minimumResumableRoomSeq = resumeWindowService == null ? 0 : resumeWindowService.window(roomId).minimumResumableRoomSeq();
+        if (lastSeenRoomSeq < minimumResumableRoomSeq) {
+            DocumentLiveState state = documentStateService.getOrInitialize(roomId);
+            roomBackfillRepository.record(roomId, userId, clientSessionId, lastSeenRoomSeq, state.currentRoomSeq(),
+                    "RESYNC_REQUIRED", 0, "client is behind minimum resumable roomSeq");
+            return new BackfillResult("RESYNC_REQUIRED", lastSeenRoomSeq, state.currentRoomSeq(), List.of(), state,
+                    "CLIENT_BEHIND_MINIMUM_RESUMABLE_SEQUENCE");
+        }
+        List<OperationRecord> operations = operationRepository.findActiveByRoomAfterRoomSeq(roomId, lastSeenRoomSeq);
         long currentRoomSeq = operations.stream().mapToLong(OperationRecord::roomSeq).max().orElse(lastSeenRoomSeq);
         if (operations.size() > maxBackfillEvents) {
             DocumentLiveState state = documentStateService.getOrInitialize(roomId);
