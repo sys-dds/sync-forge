@@ -30,7 +30,6 @@ class Sync016To025FunctionalIntegrationTest extends AbstractIntegrationTest {
 
         submitAck(userA, fixture.roomId().toString(), "e2e-2", 2, 1, "TEXT_INSERT", Map.of("position", 5, "text", " world"));
         submitAck(userA, fixture.roomId().toString(), "e2e-3", 3, 2, "TEXT_REPLACE", Map.of("position", 0, "length", 5, "text", "hi"));
-        restTemplate.postForObject(baseUrl + "/api/v1/rooms/" + fixture.roomId() + "/snapshots", Map.of(), Map.class);
 
         TestSocket resumedB = TestSocket.connect(websocketUri(), fixture.ownerId(), "b-device-2", "b-session", objectMapper);
         resumedB.send(Map.of("type", "RESUME_ROOM", "messageId", "resume", "roomId", fixture.roomId().toString(),
@@ -39,6 +38,7 @@ class Sync016To025FunctionalIntegrationTest extends AbstractIntegrationTest {
         List<Map<String, Object>> events = events(resumedB.nextOfType("ROOM_BACKFILL"));
         assertThat(events).extracting(event -> event.get("roomSeq")).containsExactly(2, 3);
 
+        restTemplate.postForObject(baseUrl + "/api/v1/rooms/" + fixture.roomId() + "/snapshots", Map.of(), Map.class);
         Map<String, Object> replay = restTemplate.postForObject(baseUrl + "/api/v1/rooms/" + fixture.roomId() + "/document-state/rebuild",
                 Map.of(), Map.class);
         assertThat(replay).containsEntry("replayEquivalent", true);

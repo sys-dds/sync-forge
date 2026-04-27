@@ -12,6 +12,8 @@ import com.syncforge.api.operation.store.OperationRepository;
 import com.syncforge.api.shared.BadRequestException;
 import com.syncforge.api.snapshot.api.SnapshotReplayResponse;
 import com.syncforge.api.snapshot.model.DocumentSnapshot;
+import com.syncforge.api.text.model.TextAtom;
+import com.syncforge.api.text.store.TextConvergenceRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -21,16 +23,19 @@ public class SnapshotReplayService {
     private final DocumentStateService documentStateService;
     private final DocumentStateRepository documentStateRepository;
     private final OperationRepository operationRepository;
+    private final TextConvergenceRepository textConvergenceRepository;
 
     public SnapshotReplayService(
             SnapshotService snapshotService,
             DocumentStateService documentStateService,
             DocumentStateRepository documentStateRepository,
-            OperationRepository operationRepository) {
+            OperationRepository operationRepository,
+            TextConvergenceRepository textConvergenceRepository) {
         this.snapshotService = snapshotService;
         this.documentStateService = documentStateService;
         this.documentStateRepository = documentStateRepository;
         this.operationRepository = operationRepository;
+        this.textConvergenceRepository = textConvergenceRepository;
     }
 
     @Transactional
@@ -41,9 +46,23 @@ public class SnapshotReplayService {
             throw new BadRequestException("SNAPSHOT_CHECKSUM_MISMATCH", "Snapshot checksum does not match snapshot content");
         }
         List<OperationRecord> operations = operationRepository.findByRoomAfterRoomSeq(roomId, snapshot.roomSeq());
+        List<TextAtom> snapshotAtoms = textConvergenceRepository.listSnapshotAtoms(snapshot.id());
+        UUID snapshotLastOperationId = operationRepository.findByRoomSeq(roomId, snapshot.roomSeq())
+                .map(OperationRecord::id)
+                .orElse(null);
         UUID rebuildId = documentStateRepository.startRebuild(roomId, snapshot.documentId(), snapshot.id());
         try {
-            DocumentStateService.ReplayResult replay = documentStateService.replayOperations(operations, snapshot.contentText());
+            DocumentStateService.ReplayResult replay = operations.stream()
+                    .anyMatch(operation -> "TEXT_INSERT_AFTER".equals(operation.operationType())
+                            || "TEXT_DELETE_ATOMS".equals(operation.operationType()))
+                    || !snapshotAtoms.isEmpty()
+                    ? documentStateService.replayTextFromSnapshotAtoms(
+                            snapshotAtoms,
+                            snapshot.roomSeq(),
+                            snapshot.revision(),
+                            snapshotLastOperationId,
+                            operations)
+                    : documentStateService.replayOperations(operations, snapshot.contentText());
             DocumentLiveState rebuilt = documentStateRepository.updateState(
                     roomId,
                     replay.roomSeq() == 0 ? snapshot.roomSeq() : replay.roomSeq(),

@@ -47,7 +47,7 @@ public class SnapshotRepository {
                 select id, room_id, document_id, room_seq, revision, content_text, content_checksum, snapshot_reason, created_at
                 from document_snapshots
                 where room_id = ?
-                order by revision desc, created_at desc
+                order by room_seq desc, revision desc, created_at desc
                 limit 1
                 """, rowMapper, roomId);
         return snapshots.stream().findFirst();
