@@ -6,6 +6,16 @@ public record RoomInvariantViolation(
         String message,
         String expected,
         String actual,
-        Long relatedRoomSeq
+        Long relatedRoomSeq,
+        RecommendedRuntimeAction recommendedAction
 ) {
+    public RoomInvariantViolation(
+            String code,
+            String severity,
+            String message,
+            String expected,
+            String actual,
+            Long relatedRoomSeq) {
+        this(code, severity, message, expected, actual, relatedRoomSeq, RecommendedRuntimeAction.PAUSE_AND_REPAIR);
+    }
 }

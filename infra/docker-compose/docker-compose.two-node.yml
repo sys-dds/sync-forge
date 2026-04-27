@@ -1,0 +1,79 @@
+name: sync-forge-two-node
+
+services:
+  syncforge-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: syncforge
+      POSTGRES_USER: syncforge
+      POSTGRES_PASSWORD: syncforge
+    ports:
+      - "${SYNCFORGE_DB_PORT:-5432}:5432"
+    volumes:
+      - syncforge-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U syncforge -d syncforge"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  syncforge-redis:
+    image: redis:7.4-alpine
+    ports:
+      - "${SYNCFORGE_REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  syncforge-api-1:
+    build:
+      context: ../../apps/api
+      dockerfile: Dockerfile
+    depends_on:
+      syncforge-postgres:
+        condition: service_healthy
+      syncforge-redis:
+        condition: service_healthy
+    environment:
+      SYNCFORGE_NODE_ID: local-node-1
+      SYNCFORGE_DB_URL: jdbc:postgresql://syncforge-postgres:5432/syncforge
+      SYNCFORGE_DB_USER: syncforge
+      SYNCFORGE_DB_PASSWORD: syncforge
+      SYNCFORGE_REDIS_HOST: syncforge-redis
+      SYNCFORGE_REDIS_PORT: 6379
+    ports:
+      - "${SYNCFORGE_API_1_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/actuator/health/readiness >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  syncforge-api-2:
+    build:
+      context: ../../apps/api
+      dockerfile: Dockerfile
+    depends_on:
+      syncforge-postgres:
+        condition: service_healthy
+      syncforge-redis:
+        condition: service_healthy
+    environment:
+      SYNCFORGE_NODE_ID: local-node-2
+      SYNCFORGE_DB_URL: jdbc:postgresql://syncforge-postgres:5432/syncforge
+      SYNCFORGE_DB_USER: syncforge
+      SYNCFORGE_DB_PASSWORD: syncforge
+      SYNCFORGE_REDIS_HOST: syncforge-redis
+      SYNCFORGE_REDIS_PORT: 6379
+    ports:
+      - "${SYNCFORGE_API_2_PORT:-8081}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/actuator/health/readiness >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  syncforge-postgres-data:
