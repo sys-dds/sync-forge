@@ -164,6 +164,61 @@ public class OperationRepository {
         return count == null ? 0 : count;
     }
 
+    public long countByRoom(UUID roomId) {
+        Long count = jdbcTemplate.queryForObject("""
+                select count(*)
+                from room_operations
+                where room_id = ?
+                """, Long.class, roomId);
+        return count == null ? 0 : count;
+    }
+
+    public long countActiveByRoom(UUID roomId) {
+        Long count = jdbcTemplate.queryForObject("""
+                select count(*)
+                from room_operations
+                where room_id = ? and compacted = false
+                """, Long.class, roomId);
+        return count == null ? 0 : count;
+    }
+
+    public long countCompactedByRoom(UUID roomId) {
+        Long count = jdbcTemplate.queryForObject("""
+                select count(*)
+                from room_operations
+                where room_id = ? and compacted = true
+                """, Long.class, roomId);
+        return count == null ? 0 : count;
+    }
+
+    public long countDistinctRoomSeq(UUID roomId) {
+        Long count = jdbcTemplate.queryForObject("""
+                select count(distinct room_seq)
+                from room_operations
+                where room_id = ?
+                """, Long.class, roomId);
+        return count == null ? 0 : count;
+    }
+
+    public long countDistinctOperationIds(UUID roomId) {
+        Long count = jdbcTemplate.queryForObject("""
+                select count(distinct operation_id)
+                from room_operations
+                where room_id = ?
+                """, Long.class, roomId);
+        return count == null ? 0 : count;
+    }
+
+    public long countMissingOwnerMetadata(UUID roomId) {
+        Long count = jdbcTemplate.queryForObject("""
+                select count(*)
+                from room_operations
+                where room_id = ?
+                  and (owner_node_id is null or fencing_token is null)
+                """, Long.class, roomId);
+        return count == null ? 0 : count;
+    }
+
     public long countActiveThroughRoomSeq(UUID roomId, long roomSeq) {
         Long count = jdbcTemplate.queryForObject("""
                 select count(*)
