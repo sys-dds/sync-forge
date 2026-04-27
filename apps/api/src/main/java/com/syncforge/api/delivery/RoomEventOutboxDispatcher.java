@@ -63,6 +63,21 @@ public class RoomEventOutboxDispatcher {
         return published;
     }
 
+    public int dispatchRoomOnce(java.util.UUID roomId, int limit) {
+        if (limit <= 0 || !streamProperties.enabled()) {
+            return 0;
+        }
+        outboxRepository.releaseExpiredLocks();
+        List<RoomEventOutboxRecord> claimed = outboxRepository.findDueForDispatch(roomId, limit, nodeIdentity.nodeId(), lockTtl);
+        int published = 0;
+        for (RoomEventOutboxRecord record : claimed) {
+            if (publishOne(record)) {
+                published++;
+            }
+        }
+        return published;
+    }
+
     private boolean publishOne(RoomEventOutboxRecord record) {
         try {
             RoomOwnershipLease lease = ownershipService == null ? null : ownershipService.currentOwnership(record.roomId());

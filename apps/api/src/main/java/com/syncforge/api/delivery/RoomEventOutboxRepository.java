@@ -86,6 +86,30 @@ public class RoomEventOutboxRepository {
                 """, rowMapper, limit, nodeId, lockTtl.toMillis());
     }
 
+    public List<RoomEventOutboxRecord> findDueForDispatch(UUID roomId, int limit, String nodeId, Duration lockTtl) {
+        return jdbcTemplate.query("""
+                with due as (
+                    select id
+                    from room_event_outbox
+                    where room_id = ?
+                      and status in ('PENDING', 'RETRY')
+                      and next_attempt_at <= now()
+                      and (locked_until is null or locked_until < now())
+                    order by created_at, room_seq
+                    limit ?
+                    for update skip locked
+                )
+                update room_event_outbox outbox
+                set status = 'PUBLISHING',
+                    locked_by = ?,
+                    locked_until = now() + (? * interval '1 millisecond'),
+                    updated_at = now()
+                from due
+                where outbox.id = due.id
+                returning outbox.*
+                """, rowMapper, roomId, limit, nodeId, lockTtl.toMillis());
+    }
+
     public Optional<RoomEventOutboxRecord> markPublished(UUID id, String streamKey, String streamId) {
         return jdbcTemplate.query("""
                 update room_event_outbox
@@ -167,6 +191,41 @@ public class RoomEventOutboxRepository {
                 where status = ?
                 """, Long.class, status.name());
         return count == null ? 0L : count;
+    }
+
+    public long countByRoomAndStatus(UUID roomId, RoomEventOutboxStatus status) {
+        Long count = jdbcTemplate.queryForObject("""
+                select count(*)
+                from room_event_outbox
+                where room_id = ? and status = ?
+                """, Long.class, roomId, status.name());
+        return count == null ? 0L : count;
+    }
+
+    public long countByRoom(UUID roomId) {
+        Long count = jdbcTemplate.queryForObject("""
+                select count(*)
+                from room_event_outbox
+                where room_id = ?
+                """, Long.class, roomId);
+        return count == null ? 0L : count;
+    }
+
+    public long latestPublishedRoomSeq(UUID roomId) {
+        Long roomSeq = jdbcTemplate.queryForObject("""
+                select coalesce(max(room_seq), 0)
+                from room_event_outbox
+                where room_id = ? and status = 'PUBLISHED'
+                """, Long.class, roomId);
+        return roomSeq == null ? 0L : roomSeq;
+    }
+
+    public Long oldestPendingAgeMs(UUID roomId) {
+        return jdbcTemplate.queryForObject("""
+                select cast(extract(epoch from (now() - min(created_at))) * 1000 as bigint)
+                from room_event_outbox
+                where room_id = ? and status in ('PENDING', 'RETRY')
+                """, Long.class, roomId);
     }
 
     private RoomEventOutboxRecord map(ResultSet rs, int rowNum) throws SQLException {

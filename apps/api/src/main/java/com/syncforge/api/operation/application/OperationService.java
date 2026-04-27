@@ -23,6 +23,7 @@ import com.syncforge.api.ownership.RoomOwnershipDecision;
 import com.syncforge.api.ownership.RoomOwnershipLease;
 import com.syncforge.api.ownership.RoomOwnershipService;
 import com.syncforge.api.room.application.RoomPermissionService;
+import com.syncforge.api.runtime.RoomRuntimeControlService;
 import com.syncforge.api.shared.BadRequestException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -43,6 +44,7 @@ public class OperationService {
     private final CanonicalOperationPayloadHasher payloadHasher;
     private final RoomOwnershipService ownershipService;
     private final NodeIdentity nodeIdentity;
+    private final RoomRuntimeControlService runtimeControlService;
 
     public OperationService(
             OperationRepository operationRepository,
@@ -55,7 +57,8 @@ public class OperationService {
             OfflineOperationSubmissionRepository offlineSubmissionRepository,
             CanonicalOperationPayloadHasher payloadHasher,
             RoomOwnershipService ownershipService,
-            NodeIdentity nodeIdentity) {
+            NodeIdentity nodeIdentity,
+            RoomRuntimeControlService runtimeControlService) {
         this.operationRepository = operationRepository;
         this.attemptRepository = attemptRepository;
         this.sequenceRepository = sequenceRepository;
@@ -67,6 +70,7 @@ public class OperationService {
         this.payloadHasher = payloadHasher;
         this.ownershipService = ownershipService;
         this.nodeIdentity = nodeIdentity;
+        this.runtimeControlService = runtimeControlService;
     }
 
     @Transactional
@@ -110,6 +114,13 @@ public class OperationService {
             recordOfflineRejected(command, "DUPLICATE_OPERATION_CONFLICT", "operationId already exists with different payload");
             return OperationSubmitResult.nack(command.operationId(), command.clientSeq(), "DUPLICATE_OPERATION_CONFLICT",
                     "operationId already exists with different payload", null);
+        }
+
+        if (runtimeControlService.writesPaused(command.roomId())) {
+            recordRejected(command, "ROOM_WRITES_PAUSED", "Room writes are paused", null);
+            recordOfflineRejected(command, "ROOM_WRITES_PAUSED", "Room writes are paused");
+            return OperationSubmitResult.nack(command.operationId(), command.clientSeq(), "ROOM_WRITES_PAUSED",
+                    "Room writes are paused", null);
         }
 
         RoomOwnershipLease ownership = ownershipForAppend(command);
