@@ -98,6 +98,8 @@ public class RoomEventStreamPublisher {
         fields.put("operation", objectMapper.writeValueAsString(event.operation()));
         fields.put("transformed", Boolean.toString(event.transformed()));
         fields.put("producedByNodeId", event.producedByNodeId());
+        fields.put("ownerNodeId", operationOwner(event.producedByNodeId()));
+        fields.put("fencingToken", "");
         fields.put("createdAt", event.createdAt().toString());
         return fields;
     }
@@ -116,8 +118,14 @@ public class RoomEventStreamPublisher {
         fields.put("operation", objectMapper.writeValueAsString(payload.get("operation")));
         fields.put("transformed", Boolean.toString(Boolean.TRUE.equals(payload.get("transformed"))));
         fields.put("producedByNodeId", nodeIdentity.nodeId());
+        fields.put("ownerNodeId", outbox.ownerNodeId() == null ? "" : outbox.ownerNodeId());
+        fields.put("fencingToken", outbox.fencingToken() == null ? "" : outbox.fencingToken().toString());
         fields.put("createdAt", string(payload, "createdAt"));
         return fields;
+    }
+
+    private String operationOwner(String nodeId) {
+        return nodeId == null ? "" : nodeId;
     }
 
     private String string(Map<String, Object> payload, String field) {

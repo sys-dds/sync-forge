@@ -38,15 +38,28 @@ public class RoomEventOutboxRepository {
             String operationId,
             String logicalEventKey,
             Map<String, Object> payload) {
+        return insertPendingOperationEvent(id, roomId, roomSeq, revision, operationId, logicalEventKey, payload, null, null);
+    }
+
+    public RoomEventOutboxRecord insertPendingOperationEvent(
+            UUID id,
+            UUID roomId,
+            long roomSeq,
+            long revision,
+            String operationId,
+            String logicalEventKey,
+            Map<String, Object> payload,
+            String ownerNodeId,
+            Long fencingToken) {
         jdbcTemplate.update("""
                 insert into room_event_outbox (
                     id, room_id, room_seq, revision, operation_id, event_type,
-                    logical_event_key, payload_json, status
+                    logical_event_key, payload_json, status, owner_node_id, fencing_token
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?)
                 on conflict (logical_event_key) do nothing
                 """, id, roomId, roomSeq, revision, operationId, RoomEventPayloadFactory.OPERATION_APPLIED,
-                logicalEventKey, writePayload(payload), RoomEventOutboxStatus.PENDING.name());
+                logicalEventKey, writePayload(payload), RoomEventOutboxStatus.PENDING.name(), ownerNodeId, fencingToken);
         return findByRoomSeq(roomId, roomSeq).orElseThrow();
     }
 
@@ -178,7 +191,9 @@ public class RoomEventOutboxRepository {
                 rs.getObject("created_at", OffsetDateTime.class),
                 rs.getObject("updated_at", OffsetDateTime.class),
                 rs.getObject("published_at", OffsetDateTime.class),
-                rs.getObject("parked_at", OffsetDateTime.class));
+                rs.getObject("parked_at", OffsetDateTime.class),
+                rs.getString("owner_node_id"),
+                rs.getObject("fencing_token", Long.class));
     }
 
     private String writePayload(Map<String, Object> payload) {

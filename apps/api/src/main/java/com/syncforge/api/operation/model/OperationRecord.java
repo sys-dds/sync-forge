@@ -17,6 +17,8 @@ public record OperationRecord(
         long resultingRevision,
         String operationType,
         Map<String, Object> operation,
+        String ownerNodeId,
+        Long fencingToken,
         OffsetDateTime createdAt
 ) {
 }

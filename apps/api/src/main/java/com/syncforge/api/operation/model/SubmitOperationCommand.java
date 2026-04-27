@@ -19,7 +19,9 @@ public record SubmitOperationCommand(
         Long baseRoomSeq,
         Long dependsOnRoomSeq,
         List<String> dependsOnOperationIds,
-        String canonicalPayloadHash
+        String canonicalPayloadHash,
+        String ownerNodeId,
+        Long fencingToken
 ) {
     public SubmitOperationCommand(
             UUID roomId,
@@ -32,7 +34,7 @@ public record SubmitOperationCommand(
             String operationType,
             Map<String, Object> operation) {
         this(roomId, userId, connectionId, clientSessionId, operationId, clientSeq, baseRevision, operationType,
-                operation, false, null, null, null, List.of(), null);
+                operation, false, null, null, null, List.of(), null, null, null);
     }
 
     public SubmitOperationCommand {
@@ -41,5 +43,26 @@ public record SubmitOperationCommand(
 
     public boolean offlineRequested() {
         return Boolean.TRUE.equals(offline);
+    }
+
+    public SubmitOperationCommand(
+            UUID roomId,
+            UUID userId,
+            String connectionId,
+            String clientSessionId,
+            String operationId,
+            Long clientSeq,
+            Long baseRevision,
+            String operationType,
+            Map<String, Object> operation,
+            Boolean offline,
+            String clientOperationId,
+            Long baseRoomSeq,
+            Long dependsOnRoomSeq,
+            List<String> dependsOnOperationIds,
+            String canonicalPayloadHash) {
+        this(roomId, userId, connectionId, clientSessionId, operationId, clientSeq, baseRevision, operationType,
+                operation, offline, clientOperationId, baseRoomSeq, dependsOnRoomSeq, dependsOnOperationIds,
+                canonicalPayloadHash, null, null);
     }
 }
